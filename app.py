@@ -614,15 +614,24 @@ def build_app() -> gr.Blocks:
     task_choices  = [f"{name} [{tid}]" for name, tid in enabled_tasks]
     model_choices = build_model_dropdown_choices()
 
-    with gr.Blocks(
-        css=CSS,
-        title="MammoAI — Diagnóstico Inteligente",
-        theme=gr.themes.Soft(
-            primary_hue="pink",
-            secondary_hue="indigo",
-            neutral_hue="slate",
-        ),
-    ) as demo:
+    theme = gr.themes.Soft(
+        primary_hue="pink",
+        secondary_hue="indigo",
+        neutral_hue="slate",
+    )
+
+    blocks_kwargs = {"title": "MammoAI — Diagnóstico Inteligente"}
+    try:
+        import inspect
+        sig = inspect.signature(gr.Blocks.__init__)
+        if "css" in sig.parameters and getattr(gr, "__version__", "").startswith(("4", "3")):
+            blocks_kwargs["css"] = CSS
+        if "theme" in sig.parameters and getattr(gr, "__version__", "").startswith(("4", "3")):
+            blocks_kwargs["theme"] = theme
+    except Exception:
+        pass
+
+    with gr.Blocks(**blocks_kwargs) as demo:
 
         # ── Header ────────────────────────────────────────────────
         gr.HTML(HEADER_HTML)
@@ -692,7 +701,6 @@ def build_app() -> gr.Blocks:
                         label="📋 Informe Diagnóstico Completo",
                         lines=12, max_lines=20,
                         interactive=False,
-                        show_copy_button=True,
                     )
 
                     gr.Markdown("#### 🎯 Tabla de Lesiones Detectadas")
@@ -790,7 +798,7 @@ def build_app() -> gr.Blocks:
                     txt_train_status = gr.Textbox(
                         label="📟 Log de Entrenamiento",
                         lines=8, max_lines=15,
-                        interactive=False, show_copy_button=True,
+                        interactive=False,
                     )
                     plot_metrics = gr.Plot(
                         label="Curvas de Loss y Accuracy",
@@ -894,7 +902,6 @@ def build_app() -> gr.Blocks:
                     txt_git_log = gr.Textbox(
                         label="📟 Log de Git",
                         lines=10, interactive=False,
-                        show_copy_button=True,
                     )
                     btn_git_status = gr.Button("🔍 Ver Estado del Repositorio")
 
