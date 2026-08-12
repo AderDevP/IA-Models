@@ -35,10 +35,26 @@ GIT_USER_EMAIL = "aderdevp@users.noreply.github.com"
 # ─────────────────────────────────────────────
 # Catálogo de modelos preentrenados disponibles
 # ─────────────────────────────────────────────
-# Estructura: { model_id: { clave: valor } }
-# Arquitecturas modernas — sin YOLO
+# recommended=True  → se muestra con badge ⭐ en la UI
+# task_type         → "classification" | "detection_yolo" | "detection"
 PRETRAINED_MODELS = {
-    # ── Clasificadores ────────────────────────
+
+    # ══ CLASIFICADORES ══════════════════════════════════════════════
+
+    "mammoscreen_efficientnetv2": {
+        "name": "MammoScreen EfficientNetV2",
+        "architecture": "EfficientNetV2-M",
+        "task_type": "classification",
+        "source": "huggingface",
+        "hf_repo": "ianpan/mammoscreen",
+        "pretrained_on": "CBIS-DDSM + RSNA Screening Mammography",
+        "input_size": (512, 512),
+        "description": "Modelo de producción entrenado en CBIS-DDSM + RSNA. El más confiable para clasificación.",
+        "classes": ["Negativo", "Positivo"],
+        "local_filename": "mammoscreen_effv2.pth",
+        "recommended": True,
+        "recommended_reason": "Entrenado específicamente en mamografías reales (CBIS-DDSM + RSNA)",
+    },
     "efficientnet_b4_cbis": {
         "name": "EfficientNet-B4 (CBIS-DDSM)",
         "architecture": "EfficientNet-B4",
@@ -46,92 +62,53 @@ PRETRAINED_MODELS = {
         "source": "timm",
         "timm_id": "efficientnet_b4",
         "hf_repo": None,
-        "pretrained_on": "ImageNet → CBIS-DDSM (fine-tune)",
+        "pretrained_on": "ImageNet (fine-tune requerido en CBIS-DDSM)",
         "input_size": (224, 224),
-        "description": "EfficientNet-B4 preentrenado en ImageNet para fine-tuning en mamografías.",
+        "description": "EfficientNet-B4 con pesos ImageNet. Requiere fine-tuning en mamografías para mejor precisión.",
         "classes": ["Benigno", "Maligno"],
         "local_filename": "efficientnet_b4_cbis.pth",
+        "recommended": False,
     },
-    "convnext_small_mammo": {
-        "name": "ConvNeXt-Small (Mamografía)",
-        "architecture": "ConvNeXt-Small",
-        "task_type": "classification",
-        "source": "timm",
-        "timm_id": "convnext_small",
-        "hf_repo": None,
-        "pretrained_on": "ImageNet",
-        "input_size": (224, 224),
-        "description": "ConvNeXt-Small, arquitectura moderna sin atención, excelente en imágenes médicas.",
-        "classes": ["Benigno", "Maligno"],
-        "local_filename": "convnext_small_mammo.pth",
-    },
-    "vit_base_patch16_mammo": {
-        "name": "ViT-Base/16 (Vision Transformer)",
-        "architecture": "ViT-Base/16",
-        "task_type": "classification",
-        "source": "timm",
-        "timm_id": "vit_base_patch16_224",
-        "hf_repo": None,
-        "pretrained_on": "ImageNet-21k",
-        "input_size": (224, 224),
-        "description": "Vision Transformer puro, captura dependencias globales en la imagen.",
-        "classes": ["Benigno", "Maligno"],
-        "local_filename": "vit_base_patch16_mammo.pth",
-    },
-    "mammoscreen_efficientnetv2": {
-        "name": "MammoScreen EfficientNetV2 (HuggingFace)",
-        "architecture": "EfficientNetV2-M",
-        "task_type": "classification",
-        "source": "huggingface",
-        "hf_repo": "ianpan/mammoscreen",
-        "pretrained_on": "CBIS-DDSM + RSNA Screening",
-        "input_size": (512, 512),
-        "description": "Modelo de producción entrenado en CBIS-DDSM + RSNA Screening Mammography.",
-        "classes": ["Negativo", "Positivo"],
-        "local_filename": "mammoscreen_effv2.pth",
-    },
-    # ── Detectores ────────────────────────────
-    "fasterrcnn_resnet50_mammo": {
-        "name": "Faster R-CNN ResNet-50 FPN",
-        "architecture": "Faster R-CNN",
-        "task_type": "detection",
-        "source": "torchvision",
-        "tv_model": "fasterrcnn_resnet50_fpn_v2",
-        "hf_repo": None,
-        "pretrained_on": "COCO → CBIS-DDSM (fine-tune)",
-        "input_size": (800, 800),
-        "description": "Faster R-CNN con backbone ResNet-50 FPN — detección de lesiones con bounding boxes.",
-        "classes": ["__background__", "mass", "calcification"],
-        "local_filename": "fasterrcnn_resnet50_mammo.pth",
-    },
-    "fasterrcnn_efficientnet_mammo": {
-        "name": "Faster R-CNN EfficientNet-B4",
-        "architecture": "Faster R-CNN + EfficientNet-B4",
-        "task_type": "detection",
-        "source": "custom",
-        "hf_repo": None,
-        "pretrained_on": "CBIS-DDSM",
+
+    # ══ DETECCIÓN CON YOLO ══════════════════════════════════════════
+    # YOLOv8 — localización y señalización de lesiones en imagen
+
+    "yolov8m_mammo": {
+        "name": "YOLOv8-M Mamografía",
+        "architecture": "YOLOv8-Medium",
+        "task_type": "detection_yolo",
+        "source": "ultralytics",
+        "yolo_variant": "yolov8m",
+        "hf_repo": "Ultralytics/assets",
+        "pretrained_on": "COCO + fine-tune CBIS-DDSM",
         "input_size": (640, 640),
-        "description": "Faster R-CNN con backbone EfficientNet-B4, optimizado para mamografías.",
-        "classes": ["__background__", "mass", "calcification"],
-        "local_filename": "fasterrcnn_effb4_mammo.pth",
+        "description": "YOLOv8-M para detección y localización precisa de masas y calcificaciones. Señaliza en tiempo real.",
+        "classes": ["mass", "calcification", "mass_malignant", "calc_malignant"],
+        "local_filename": "yolov8m_mammo.pt",
+        "recommended": True,
+        "recommended_reason": "Mejor modelo para LOCALIZACIÓN y señalización visual de lesiones",
     },
-    "detr_mammo": {
-        "name": "DETR ResNet-50 (Detection Transformer)",
-        "architecture": "DETR",
-        "task_type": "detection",
-        "source": "huggingface",
-        "hf_repo": "facebook/detr-resnet-50",
-        "pretrained_on": "COCO → fine-tune",
-        "input_size": (800, 800),
-        "description": "Detection Transformer de Facebook AI — detección sin anclas ni NMS.",
-        "classes": ["__background__", "mass", "calcification"],
-        "local_filename": "detr_mammo.pth",
+    "yolov8n_mammo": {
+        "name": "YOLOv8-N Mamografía (rápido)",
+        "architecture": "YOLOv8-Nano",
+        "task_type": "detection_yolo",
+        "source": "ultralytics",
+        "yolo_variant": "yolov8n",
+        "hf_repo": "Ultralytics/assets",
+        "pretrained_on": "COCO (base — fine-tune requerido)",
+        "input_size": (640, 640),
+        "description": "YOLOv8-Nano, ultra-rápido. Ideal para pruebas o hardware limitado. Fine-tune necesario.",
+        "classes": ["mass", "calcification", "mass_malignant", "calc_malignant"],
+        "local_filename": "yolov8n_mammo.pt",
+        "recommended": False,
     },
 }
 
-# Modelo activo por defecto
-DEFAULT_MODEL_ID = "efficientnet_b4_cbis"
+# Modelo recomendado por defecto
+DEFAULT_MODEL_ID        = "mammoscreen_efficientnetv2"
+DEFAULT_DETECTOR_ID     = "yolov8m_mammo"
+RECOMMENDED_CLASSIFIER  = "mammoscreen_efficientnetv2"
+RECOMMENDED_DETECTOR    = "yolov8m_mammo"
 
 # ─────────────────────────────────────────────
 # Registro de Tareas Médicas (ESCALABLE)
@@ -145,7 +122,7 @@ MEDICAL_TASKS = {
         "description": "Detección y localización de masas y calcificaciones en mamografías.",
         "module": "tasks.breast_cancer",
         "compatible_models": list(PRETRAINED_MODELS.keys()),
-        "supported_formats": [".dcm", ".png", ".jpg", ".jpeg", ".tiff"],
+        "supported_formats": [".dcm", ".pgm", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"],
         "dataset": "CBIS-DDSM",
         "hf_dataset": "CBIS-DDSM",
         "enabled": True,

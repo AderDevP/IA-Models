@@ -40,27 +40,57 @@ logger = logging.getLogger(__name__)
 # Carga de modelos
 # ──────────────────────────────────────────────────────────────────
 
-_model_cache: Dict[str, nn.Module] = {}   # caché en memoria
+_model_cache: Dict[str, nn.Module] = {}   # caché modelos torch
+_yolo_cache:  Dict[str, Any] = {}          # caché modelos YOLO
+
+
+def load_yolo_model(model_id: str, force_reload: bool = False) -> Tuple[Any, Dict]:
+    """Carga un modelo YOLOv8 via Ultralytics."""
+    meta = PRETRAINED_MODELS[model_id]
+    if model_id in _yolo_cache and not force_reload:
+        return _yolo_cache[model_id], meta
+
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        raise ImportError("Instala ultralytics: pip install ultralytics")
+
+    weights_path = MODELS_DIR / meta["local_filename"]
+    variant = meta.get("yolo_variant", "yolov8m")
+
+    if weights_path.exists():
+        logger.info(f"Cargando YOLO desde disco: {weights_path}")
+        model = YOLO(str(weights_path))
+    else:
+        logger.warning(
+            f"Pesos YOLO no encontrados: {weights_path}. "
+            f"Cargando pesos COCO base ({variant}) como fallback."
+        )
+        model = YOLO(f"{variant}.pt")  # descarga automáticamente de Ultralytics
+
+    _yolo_cache[model_id] = model
+    logger.info(f"YOLO cargado: {meta['name']}")
+    return model, meta
 
 
 def load_model(
     model_id: str,
     device: Optional[str] = None,
     force_reload: bool = False,
-) -> Tuple[nn.Module, Dict]:
+) -> Tuple[Any, Dict]:
     """Carga un modelo por su ID desde el caché o disco.
-
-    Args:
-        model_id: Clave en config.PRETRAINED_MODELS
-        device: 'cuda', 'cpu' o None (auto-detecta)
-        force_reload: Si True, ignora el caché en memoria
-    Returns:
-        Tuple (model: nn.Module, meta: dict)
+    Soporta modelos torch (timm/HuggingFace) y YOLOv8 (Ultralytics).
     """
     if model_id not in PRETRAINED_MODELS:
         raise ValueError(f"Modelo desconocido: '{model_id}'")
 
-    meta   = PRETRAINED_MODELS[model_id]
+    meta      = PRETRAINED_MODELS[model_id]
+    task_type = meta.get("task_type", "classification")
+
+    # ── YOLOv8 — ruta separada ────────────────────────────────────
+    if task_type == "detection_yolo":
+        return load_yolo_model(model_id, force_reload=force_reload)
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     if model_id in _model_cache and not force_reload:
@@ -248,8 +278,153 @@ def run_inference(
 
 
 # ──────────────────────────────────────────────────────────────────
-# Visualización — Bounding Boxes con medidas
+# Inferencia YOLOv8
 # ──────────────────────────────────────────────────────────────────
+
+def run_yolo_inference(
+    image: Image.Image,
+    yolo_model: Any,
+    model_meta: Dict,
+    pixel_spacing: float = DEFAULT_PIXEL_SPACING_MM,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    device: str = "cpu",
+) -> Dict[str, Any]:
+    """Ejecuta inferencia YOLOv8 y devuelve reporte estructurado compatible
+    con el resto del pipeline (misma estructura que run_inference)."""
+    import numpy as np
+
+    start_t = time.time()
+    classes = model_meta.get("classes", ["mass", "calcification"])
+
+    # YOLOv8 acepta PIL directamente
+    results = yolo_model.predict(
+        source=image,
+        conf=confidence_threshold,
+        device=device,
+        verbose=False,
+    )
+    elapsed = time.time() - start_t
+
+    detections = []
+    for r in results:
+        boxes  = r.boxes
+        if boxes is None or len(boxes) == 0:
+            continue
+        for box in boxes:
+            x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+            score = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            cls_name = classes[cls_id] if cls_id < len(classes) else f"cls_{cls_id}"
+
+            w_px = x2 - x1
+            h_px = y2 - y1
+            diameter_mm = max(w_px, h_px) * pixel_spacing
+            area_mm2    = w_px * h_px * (pixel_spacing ** 2)
+
+            detections.append({
+                "id":           len(detections) + 1,
+                "class":        cls_name,
+                "confidence":   round(score * 100, 2),
+                "bbox_px":      [round(x1), round(y1), round(x2), round(y2)],
+                "width_px":     round(w_px),
+                "height_px":    round(h_px),
+                "diameter_mm":  round(diameter_mm, 2),
+                "area_mm2":     round(area_mm2, 2),
+                "center_x_px":  round((x1 + x2) / 2),
+                "center_y_px":  round((y1 + y2) / 2),
+            })
+
+    # Estimar BIRADS desde máxima confianza de detección
+    from config import BIRADS_CATEGORIES
+    if detections:
+        max_conf  = max(d["confidence"] for d in detections) / 100
+        # Lesiones malignas tienen BIRADS más alto
+        malignant = any("malignant" in d["class"] or "maligno" in d["class"] for d in detections)
+        birads_prob = max_conf * (1.2 if malignant else 0.8)
+        birads_prob = min(birads_prob, 1.0)
+    else:
+        birads_prob = 0.01
+
+    birads_cat = _estimate_birads(birads_prob)
+    birads_info = BIRADS_CATEGORIES.get(birads_cat, {})
+
+    # Resumen de clasificación (derivado de detecciones)
+    if detections:
+        top = max(detections, key=lambda d: d["confidence"])
+        pred_class = "Maligno" if "malignant" in top["class"] else "Sospechoso"
+    else:
+        pred_class = "Sin hallazgos"
+
+    report = {
+        "task":           "breast_cancer",
+        "detections":     detections,
+        "classification": {
+            "predicted_class": pred_class,
+            "confidence":      round(birads_prob * 100, 2),
+            "probabilities":   {
+                "Sin hallazgos": round((1 - birads_prob) * 100, 2),
+                "Con lesión":    round(birads_prob * 100, 2),
+            },
+        },
+        "birads":          birads_cat,
+        "birads_info":     birads_info,
+        "inference_time_s": round(elapsed, 3),
+        "model_id":        model_meta.get("name", ""),
+        "pixel_spacing_mm": pixel_spacing,
+        "report_text":     _build_yolo_report_text(detections, birads_cat, birads_info, model_meta),
+        "metadata":        {},
+    }
+    logger.info(
+        f"YOLO inference: {len(detections)} detecciones | "
+        f"BIRADS {birads_cat} | {elapsed:.3f}s"
+    )
+    return report
+
+
+def _estimate_birads(prob: float) -> int:
+    if prob < 0.02:  return 1
+    if prob < 0.10:  return 2
+    if prob < 0.30:  return 3
+    if prob < 0.60:  return 4
+    if prob < 0.95:  return 5
+    return 6
+
+
+def _build_yolo_report_text(detections, birads_cat, birads_info, model_meta) -> str:
+    lines = [
+        "╔══════════════════════════════════════════════╗",
+        "║     REPORTE DIAGNÓSTICO — MammoAI  (YOLO)   ║",
+        "╚══════════════════════════════════════════════╝",
+        "",
+        f"🤖 Modelo: {model_meta.get('name', 'YOLOv8')}",
+        f"📋 BIRADS ESTIMADO: {birads_info.get('label', f'BIRADS {birads_cat}')}",
+        f"   {birads_info.get('meaning', '')}",
+        "",
+    ]
+    if detections:
+        lines.append(f"🎯 LESIONES DETECTADAS: {len(detections)}")
+        for d in detections:
+            lines += [
+                "",
+                f"   Lesión #{d['id']} — {d['class'].upper()}",
+                f"   ├─ Confianza:     {d['confidence']:.1f}%",
+                f"   ├─ Diámetro máx:  {d['diameter_mm']:.2f} mm",
+                f"   ├─ Área:          {d['area_mm2']:.2f} mm²",
+                f"   ├─ Posición:      x={d['center_x_px']}px, y={d['center_y_px']}px",
+                f"   └─ BBox (px):     {d['bbox_px']}",
+            ]
+    else:
+        lines.append("✅ YOLOv8 no detectó lesiones sospechosas en esta imagen.")
+    lines += [
+        "",
+        "─" * 48,
+        "⚠️  AVISO: Este reporte es una herramienta de apoyo.",
+        "   No reemplaza el diagnóstico de un radiólogo certificado.",
+        "─" * 48,
+    ]
+    return "\n".join(lines)
+
+
 
 def draw_bounding_boxes(
     image: Image.Image,
@@ -460,8 +635,22 @@ def full_diagnostic_pipeline(
 
     # 1. Cargar modelo
     model, meta = load_model(model_id, device=device)
+    task_type   = meta.get("task_type", "classification")
 
-    # 2. Inferencia
+    # 2. Inferencia — YOLO o modelo Torch
+    if task_type == "detection_yolo":
+        report      = run_yolo_inference(
+            image, model, meta,
+            pixel_spacing=pixel_spacing,
+            confidence_threshold=confidence_threshold,
+            device=device,
+        )
+        # YOLO ya genera sus propias anotaciones con colores; también usamos draw_bounding_boxes
+        annotated   = draw_bounding_boxes(image, report.get("detections", []))
+        heatmap_img = image.copy()   # YOLO no usa Grad-CAM
+        return annotated, heatmap_img, report
+
+    # ── Modelos Torch (clasificadores / detectores Faster R-CNN / DETR) ──
     report = run_inference(
         image, model, meta, task,
         pixel_spacing=pixel_spacing,
@@ -472,13 +661,14 @@ def full_diagnostic_pipeline(
     # 3. Dibujar bounding boxes
     annotated = draw_bounding_boxes(image, report.get("detections", []))
 
-    # 4. Grad-CAM (solo para clasificadores)
+    # 4. Grad-CAM (solo para clasificadores, no para detectores)
     heatmap_img = image.copy()
     if generate_gradcam:
         arch = meta["architecture"].lower()
-        if not any(x in arch for x in ["faster r-cnn", "fasterrcnn", "detr"]):
+        if not any(x in arch for x in ["faster r-cnn", "fasterrcnn", "detr", "yolo"]):
             cam = compute_gradcam(image, model, meta, task, device=device)
             if cam is not None:
                 heatmap_img = overlay_heatmap(image, cam)
 
     return annotated, heatmap_img, report
+

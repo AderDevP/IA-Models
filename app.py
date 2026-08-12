@@ -64,10 +64,12 @@ def get_enabled_tasks() -> List[Tuple[str, str]]:
 
 
 def build_model_dropdown_choices() -> List[str]:
-    return [
-        f"{PRETRAINED_MODELS[mid]['name']} [{mid}]"
-        for mid in PRETRAINED_MODELS
-    ]
+    choices = []
+    for mid, meta in PRETRAINED_MODELS.items():
+        badge = "⭐ RECOMENDADO — " if meta.get("recommended") else ""
+        task_icon = "🎯" if "yolo" in meta.get("task_type", "") else "🧠"
+        choices.append(f"{task_icon} {badge}{meta['name']} [{mid}]")
+    return choices
 
 
 def parse_model_id_from_choice(choice: str) -> str:
@@ -600,8 +602,12 @@ HEADER_HTML = """
   <h1>🔬 MammoAI</h1>
   <p>Sistema Open Source de IA para Detección y Análisis Cuantitativo de Mamografías</p>
   <p style="font-size:0.8rem;margin-top:8px;opacity:0.6;">
-    Arquitecturas: EfficientNet · ConvNeXt · ViT · Faster R-CNN · DETR &nbsp;|&nbsp;
-    Dataset: CBIS-DDSM &nbsp;|&nbsp; v{version}
+    Clasificación: MammoScreen EfficientNetV2 &nbsp;|&nbsp;
+    Detección/Señalización: YOLOv8 &nbsp;|&nbsp;
+    Formatos: DICOM · PGM · PNG · JPG · TIFF · BMP &nbsp;|&nbsp; v{version}
+  </p>
+  <p style="font-size:0.75rem;color:#f39c12;margin-top:4px;">
+    ⭐ Modelos recomendados marcados en el selector
   </p>
 </div>
 """.format(version=APP_VERSION)
@@ -658,12 +664,12 @@ def build_app() -> gr.Blocks:
                         choices=model_choices,
                         value=model_choices[0] if model_choices else None,
                         label="🤖 Modelo de IA",
-                        info="Arquitecturas modernas — sin YOLO",
+                        info="⭐ = Recomendado  |  🎯 = Detección/Localización (YOLO)  |  🧠 = Clasificación",
                         interactive=True,
                     )
                     image_input = gr.File(
                         label="📁 Subir Mamografía",
-                        file_types=[".dcm", ".png", ".jpg", ".jpeg", ".tiff"],
+                        file_types=[".dcm", ".pgm", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"],
                         type="filepath",
                     )
                     with gr.Accordion("🔧 Parámetros Avanzados", open=False):
