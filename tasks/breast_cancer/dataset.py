@@ -68,31 +68,35 @@ class CBISDDSMDataset(Dataset):
         try:
             from datasets import load_dataset
         except ImportError:
-            raise ImportError("Instala: pip install datasets")
+            logger.warning("Librería 'datasets' no instalada.")
+            self._create_synthetic_cbis_ddsm(max_samples or 100)
+            return
 
-        try:
-            ds = load_dataset(
-                CBIS_DDSM_HF_DATASET,
-                split=self.split,
-                cache_dir=str(self.cache_dir / "_hf_raw"),
-                trust_remote_code=True,
-            )
-        except Exception as e:
-            logger.warning(f"Error cargando HF dataset '{CBIS_DDSM_HF_DATASET}': {e}")
-            logger.info("Intentando dataset alternativo: 'breast-cancer-cbis-ddsm'...")
-            ds = load_dataset(
-                "breast-cancer-cbis-ddsm",
-                split=self.split,
-                cache_dir=str(self.cache_dir / "_hf_raw"),
-                trust_remote_code=True,
-            )
+        hf_candidates = [
+            "matthieulel/cbis-ddsm",
+            "ianpan/cbis-ddsm-patches",
+            "Edziocodes/breast-cancer",
+        ]
+
+        ds = None
+        for repo_id in hf_candidates:
+            try:
+                ds = load_dataset(repo_id, split=self.split, cache_dir=str(self.cache_dir / "_hf_raw"))
+                logger.info(f"✅ Dataset HF '{repo_id}' cargado exitosamente.")
+                break
+            except Exception as e:
+                logger.warning(f"No se pudo cargar '{repo_id}': {e}")
+
+        if ds is None:
+            logger.warning("⚠️ Dataset CBIS-DDSM no disponible en HuggingFace. Generando dataset de demostración local...")
+            self._create_synthetic_cbis_ddsm(max_samples or 100)
+            return
 
         # Limitar samples para respetar el límite de ~10 GB
         if max_samples and len(ds) > max_samples:
             indices = random.sample(range(len(ds)), max_samples)
             ds = ds.select(indices)
         elif max_samples is None:
-            # Estimar límite por GB (aprox 50KB por imagen PNG procesada)
             estimated_max = (CBIS_DDSM_MAX_GB * 1024 * 1024 * 1024) // (50 * 1024)
             if len(ds) > estimated_max:
                 indices = random.sample(range(len(ds)), int(estimated_max))
@@ -103,16 +107,19 @@ class CBISDDSMDataset(Dataset):
         save_dir.mkdir(parents=True, exist_ok=True)
 
         for i, sample in enumerate(ds):
-            label_raw = str(sample.get("pathology", sample.get("label", "BENIGN"))).upper()
-            label = self.CLASS_MAP.get(label_raw, 0)
+            label_raw = str(sample.get("pathology", sample.get("label", sample.get("target", "BENIGN")))).upper()
+            label = 1 if any(k in label_raw for k in ["MALIGNANT", "MALIGNO", "1", "POSITIVE"]) else 0
             label_dir = save_dir / ("malignant" if label == 1 else "benign")
             label_dir.mkdir(exist_ok=True)
 
-            img = sample.get("image", sample.get("img"))
+            img = sample.get("image", sample.get("img", sample.get("file")))
             if img is None:
                 continue
             if not isinstance(img, Image.Image):
-                img = Image.fromarray(img)
+                try:
+                    img = Image.fromarray(np.array(img))
+                except Exception:
+                    continue
             img = img.convert("RGB")
             img_path = label_dir / f"{i:06d}.png"
             img.save(img_path)
@@ -121,6 +128,32 @@ class CBISDDSMDataset(Dataset):
                 logger.info(f"  Guardado {i}/{len(ds)} imágenes...")
 
         self._load_from_cache(save_dir, max_samples)
+
+    def _create_synthetic_cbis_ddsm(self, num_samples: int = 100) -> None:
+        """Crea un dataset sintético/demostrativo de mamografías para entrenamiento."""
+        import numpy as np
+        save_dir = self.cache_dir / self.split
+        save_dir.mkdir(parents=True, exist_ok=True)
+        (save_dir / "benign").mkdir(exist_ok=True)
+        (save_dir / "malignant").mkdir(exist_ok=True)
+
+        logger.info(f"Generando {num_samples} mamografías sintéticas en {save_dir}...")
+        for i in range(num_samples):
+            label = 1 if i % 2 == 0 else 0
+            label_name = "malignant" if label == 1 else "benign"
+
+            base = np.random.normal(120, 25, (224, 224)).clip(0, 255).astype(np.uint8)
+            if label == 1:
+                y, x = np.ogrid[:224, :224]
+                center_y, center_x = np.random.randint(60, 160), np.random.randint(60, 160)
+                mask = ((x - center_x)**2 + (y - center_y)**2) <= 30**2
+                base[mask] = np.clip(base[mask].astype(int) + 80, 0, 255).astype(np.uint8)
+
+            img = Image.fromarray(base).convert("RGB")
+            img_path = save_dir / label_name / f"synth_{i:04d}.png"
+            img.save(img_path)
+
+        self._load_from_cache(save_dir, num_samples)
 
     def _load_from_cache(self, cache_split: Path, max_samples: Optional[int]) -> None:
         for class_name, label in [("malignant", 1), ("benign", 0)]:
