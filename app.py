@@ -20,22 +20,38 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import gradio as gr
+import inspect
+import re
 
-# ── Monkey-patch para compatibilidad universal con Gradio 4, 5 y 6 ──
-_orig_textbox_init = gr.Textbox.__init__
-def _safe_textbox_init(self, *args, **kwargs):
-    kwargs.pop("show_copy_button", None)
-    return _orig_textbox_init(self, *args, **kwargs)
-gr.Textbox.__init__ = _safe_textbox_init
+def _patch_gradio_compat():
+    """Monkey-patch universal que elimina automáticamente cualquier parámetro
+    desactualizado en Gradio 5.x / 6.x (show_copy_button, height, etc.)"""
+    for name, cls in list(gr.__dict__.items()):
+        if isinstance(cls, type) and hasattr(cls, "__init__"):
+            try:
+                orig_init = cls.__init__
+                if getattr(orig_init, "_mammo_patched", False):
+                    continue
+                def _wrap(init_fn):
+                    def _safe_init(self, *args, **kwargs):
+                        while True:
+                            try:
+                                return init_fn(self, *args, **kwargs)
+                            except TypeError as e:
+                                msg = str(e)
+                                if "unexpected keyword argument" in msg:
+                                    m = re.search(r"unexpected keyword argument '([^']+)'", msg)
+                                    if m and m.group(1) in kwargs:
+                                        kwargs.pop(m.group(1), None)
+                                        continue
+                                raise e
+                    _safe_init._mammo_patched = True
+                    return _safe_init
+                cls.__init__ = _wrap(orig_init)
+            except Exception:
+                pass
 
-_orig_blocks_init = gr.Blocks.__init__
-def _safe_blocks_init(self, *args, **kwargs):
-    gr_ver = getattr(gr, "__version__", "4.0")
-    if not gr_ver.startswith(("3", "4")):
-        kwargs.pop("theme", None)
-        kwargs.pop("css", None)
-    return _orig_blocks_init(self, *args, **kwargs)
-gr.Blocks.__init__ = _safe_blocks_init
+_patch_gradio_compat()
 import plotly.graph_objects as go
 from PIL import Image
 
@@ -704,8 +720,8 @@ def build_app() -> gr.Blocks:
                 with gr.Column(scale=2):
                     gr.Markdown("### 🖼️ Visualización Diagnóstica")
                     with gr.Row():
-                        img_output  = gr.Image(label="🎯 Detecciones + Medidas", type="pil", height=380)
-                        img_heatmap = gr.Image(label="🌡️ Grad-CAM Heatmap",    type="pil", height=380)
+                        img_output  = gr.Image(label="🎯 Detecciones + Medidas", type="pil")
+                        img_heatmap = gr.Image(label="🌡️ Grad-CAM Heatmap",    type="pil")
 
                     html_birads = gr.HTML("<div style='padding:12px;color:#888;'>BIRADS aparecerá aquí.</div>")
 
@@ -718,9 +734,7 @@ def build_app() -> gr.Blocks:
                     gr.Markdown("#### 🎯 Tabla de Lesiones Detectadas")
                     table_detections = gr.Dataframe(
                         headers=["#", "Tipo", "Confianza", "Diámetro (mm)", "Área (mm²)", "BBox (px)"],
-                        datatype=["number", "str", "str", "str", "str", "str"],
                         interactive=False,
-                        height=200,
                     )
 
                     with gr.Row():
