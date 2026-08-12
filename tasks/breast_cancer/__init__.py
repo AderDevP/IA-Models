@@ -294,7 +294,15 @@ class BreastCancerTask(BaseTask):
                     f"   └─ BBox (px):     {d['bbox_px']}",
                 ]
         else:
-            lines.append("✅ No se detectaron lesiones sospechosas.")
+            # Si no hay cajas pero el clasificador dice que es sospechoso
+            is_suspicious = (birads is not None and birads >= 4) or \
+                            (clf.get("predicted_class") in ["Maligno", "Sospechoso"])
+            
+            if is_suspicious:
+                lines.append("⚠️ El clasificador detectó características sospechosas,")
+                lines.append("   pero el modelo de señalización (YOLO) no generó coordenadas.")
+            else:
+                lines.append("✅ No se detectaron lesiones sospechosas.")
 
         lines += [
             "",

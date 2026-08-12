@@ -570,20 +570,16 @@ def compute_gradcam(
 def _get_gradcam_layer(model: nn.Module, arch: str) -> Optional[nn.Module]:
     """Retorna la capa objetivo para Grad-CAM según la arquitectura."""
     try:
-        if "efficientnet" in arch:
-            return model.blocks[-1]
-        elif "convnext" in arch:
-            return model.stages[-1].blocks[-1]
-        elif "vit" in arch:
+        if "vit" in arch:
             return model.blocks[-1].norm1
         elif "fasterrcnn" in arch or "faster r-cnn" in arch:
             return model.backbone.body.layer4[-1]
-        else:
-            # Intentar obtener la última capa convolucional genéricamente
-            layers = [(name, m) for name, m in model.named_modules()
-                      if isinstance(m, nn.Conv2d)]
-            if layers:
-                return layers[-1][1]
+        
+        # Para redes CNN (EfficientNet, ConvNeXt, etc), usar la última capa convolucional
+        layers = [(name, m) for name, m in model.named_modules() if isinstance(m, nn.Conv2d)]
+        if layers:
+            # Obtener la última Conv2d
+            return layers[-1][1]
     except (AttributeError, IndexError) as e:
         logger.warning(f"No se pudo obtener capa Grad-CAM: {e}")
     return None
