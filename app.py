@@ -99,6 +99,7 @@ def run_diagnosis(
     confidence_threshold: float,
     generate_gradcam: bool,
     dual_mode: bool = False,
+    hf_token: str = "",
     progress=gr.Progress(track_tqdm=True),
 ) -> Tuple:
     """Callback principal de inferencia.
@@ -114,6 +115,10 @@ def run_diagnosis(
         )
 
     try:
+        if hf_token and hf_token.strip():
+            import huggingface_hub
+            huggingface_hub.login(token=hf_token.strip())
+
         progress(0.1, desc="Cargando imagen...")
 
         # ── Cargar imagen ──────────────────────────────────────────
@@ -753,14 +758,22 @@ def build_app() -> gr.Blocks:
                 # ── Panel izquierdo: entrada ──────────────────────
                 with gr.Column(scale=1):
                     gr.Markdown("### ⚙️ Configuración de Análisis")
-
-                    task_selector = gr.Dropdown(
-                        choices=task_choices,
-                        value=task_choices[0] if task_choices else None,
-                        label="🏥 Tarea Médica",
-                        info="Selecciona el tipo de análisis",
-                        interactive=True,
-                    )
+                    
+                    with gr.Group():
+                        hf_token = gr.Textbox(
+                            label="Hugging Face Token (Para modelos privados/MedGemma)",
+                            placeholder="hf_xxxxxxxxxxxxxxxxxxx",
+                            type="password"
+                        )
+                    
+                    with gr.Group():
+                        task_selector = gr.Dropdown(
+                            choices=task_choices,
+                            value=task_choices[0] if task_choices else None,
+                            label="🏥 Tarea Médica",
+                            info="Selecciona el tipo de análisis",
+                            interactive=True,
+                        )
                     model_selector = gr.Dropdown(
                         choices=model_choices,
                         value=model_choices[0] if model_choices else None,
@@ -828,7 +841,7 @@ def build_app() -> gr.Blocks:
                 fn=run_diagnosis,
                 inputs=[
                     image_input, task_selector, model_selector,
-                    spacing_slider, confidence_slider, gradcam_toggle, dual_mode_toggle,
+                    spacing_slider, confidence_slider, gradcam_toggle, dual_mode_toggle, hf_token,
                 ],
                 outputs=[
                     img_output, img_heatmap,
