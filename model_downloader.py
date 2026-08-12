@@ -147,6 +147,14 @@ class ModelDownloader:
         log(f"   HuggingFace repo: {hf_repo}")
 
         try:
+            if meta.get("task_type") == "vlm_classification":
+                log(f"   Descargando repositorio completo (VLM Snapshot) para {hf_repo}...")
+                snapshot_dir = snapshot_download(repo_id=hf_repo)
+                # Como transformers usará el caché directamente, creamos un archivo dummy para marcarlo como instalado
+                target.touch(exist_ok=True)
+                log(f"✅ VLM cacheado en HuggingFace Hub: {snapshot_dir}")
+                return target
+
             # Intentar descargar archivo de pesos específico
             candidates = [
                 "pytorch_model.bin",

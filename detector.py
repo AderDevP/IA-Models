@@ -293,7 +293,20 @@ def run_vlm_inference(
     if not processor:
         raise ValueError("El modelo VLM no tiene 'processor' adjunto.")
         
-    inputs = processor(text=prompt_text, images=image, return_tensors="pt")
+    # Usar chat template si está disponible, sino hacer fallback a <image> prefix
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image"},
+            {"type": "text", "text": prompt_text}
+        ]}
+    ]
+    try:
+        final_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+    except Exception:
+        # Fallback para modelos que no soportan chat_template con listas complejas
+        final_prompt = f"<image>\n{prompt_text}"
+
+    inputs = processor(text=final_prompt, images=image, return_tensors="pt")
     # Acomodar tipos para int4/fp16
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     if "pixel_values" in inputs:

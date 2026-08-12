@@ -488,9 +488,13 @@ def export_trained_model(best_model_path: Optional[str], export_format: str) -> 
 # TAB 3 — GIT & MODELOS
 # ══════════════════════════════════════════════════════════════════
 
-def download_model_action(model_choice: str) -> Generator[str, None, None]:
+def download_model_action(model_choice: str, hf_token: str = "") -> Generator[str, None, None]:
     model_id = parse_model_id_from_choice(model_choice)
     log_lines = []
+
+    if hf_token and hf_token.strip():
+        import huggingface_hub
+        huggingface_hub.login(token=hf_token.strip())
 
     def callback(msg: str):
         log_lines.append(msg)
@@ -980,6 +984,11 @@ def build_app() -> gr.Blocks:
                         label="Modelo a descargar",
                         interactive=True,
                     )
+                    dl_hf_token = gr.Textbox(
+                        label="Hugging Face Token (Obligatorio para VLMs Privados)",
+                        placeholder="hf_xxxxxxxxxxxxxxxxxxx",
+                        type="password"
+                    )
                     btn_download_model = gr.Button("⬇️ Descargar Modelo", variant="primary")
                     txt_dl_status = gr.Textbox(
                         label="Estado de descarga",
@@ -1037,8 +1046,8 @@ def build_app() -> gr.Blocks:
 
             # ── Eventos Git ───────────────────────────────────────
             btn_download_model.click(
-                fn=lambda choice: "\n".join(list(download_model_action(choice))),
-                inputs=[model_dl_selector],
+                fn=lambda choice, token: "\n".join(list(download_model_action(choice, token))),
+                inputs=[model_dl_selector, dl_hf_token],
                 outputs=[txt_dl_status],
             )
             btn_model_status.click(
