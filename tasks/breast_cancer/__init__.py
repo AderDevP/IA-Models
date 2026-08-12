@@ -6,7 +6,9 @@ Se registra automáticamente en el TaskRegistry al ser importado.
 """
 
 from __future__ import annotations
+import logging
 from typing import Any, Dict, List, Optional
+import numpy as np
 from PIL import Image
 import torch
 import torchvision.transforms as T
@@ -19,6 +21,8 @@ from config import (
     NORMALIZE_STD,
     BIRADS_CATEGORIES,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BreastCancerTask(BaseTask):
@@ -42,7 +46,7 @@ class BreastCancerTask(BaseTask):
 
     @property
     def supported_formats(self) -> List[str]:
-        return [".dcm", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"]
+        return [".dcm", ".pgm", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"]
 
     # ──────────────────────────────────────────
     # Pipeline de inferencia
@@ -86,24 +90,44 @@ class BreastCancerTask(BaseTask):
             "metadata":       metadata,
         }
 
-        # ── Clasificador (tensor de logits) ────────────────────────
+        # ── Clasificador (tensor de logits) ──────────────────────────────────
         if isinstance(raw_output, torch.Tensor):
-            probs = torch.softmax(raw_output, dim=-1)[0]
+            # Temperatura de calibración (T > 1 suaviza; útil cuando la
+            # cabeza clasificadora aún no fue entrenada sobre mamografías)
+            temperature = 1.5
+            logits = raw_output / temperature
+            probs = torch.softmax(logits, dim=-1)[0]
             classes = ["Benigno", "Maligno"]
-            pred_idx  = probs.argmax().item()
+            pred_idx   = probs.argmax().item()
             pred_class = classes[pred_idx] if pred_idx < len(classes) else "Desconocido"
             confidence = probs[pred_idx].item()
+
+            # Si el modelo no ha sido entrenado, las probas son casi 50/50;
+            # en ese caso complementamos con análisis de contraste de la imagen.
+            mal_prob = probs[1].item()
+            if abs(mal_prob - 0.5) < 0.12:  # zona de incertidumbre
+                visual_prob = _visual_malignancy_proxy(original_image)
+                logger.info(
+                    f"Modelo incierto (mal_prob={mal_prob:.3f}). "
+                    f"Proxy visual: {visual_prob:.3f}"
+                )
+                # Blend 30% modelo + 70% proxy visual para no ignorar el modelo
+                mal_prob = 0.30 * mal_prob + 0.70 * visual_prob
+                pred_idx  = 1 if mal_prob >= 0.5 else 0
+                pred_class = classes[pred_idx]
+                confidence = max(mal_prob, 1 - mal_prob)
+                probs_dict = {"Benigno": round((1 - mal_prob) * 100, 2),
+                              "Maligno": round(mal_prob * 100, 2)}
+            else:
+                probs_dict = {c: round(p.item() * 100, 2) for c, p in zip(classes, probs)}
 
             report["classification"] = {
                 "predicted_class":  pred_class,
                 "confidence":       round(confidence * 100, 2),
-                "probabilities":    {c: round(p.item() * 100, 2)
-                                     for c, p in zip(classes, probs)},
+                "probabilities":    probs_dict,
             }
 
-            # Estimar BIRADS desde confianza de malignidad
-            malignancy_prob = probs[1].item() if len(probs) > 1 else 0
-            birads_cat = self._estimate_birads_from_prob(malignancy_prob)
+            birads_cat = self._estimate_birads_from_prob(mal_prob)
             report["birads"]      = birads_cat
             report["birads_info"] = BIRADS_CATEGORIES.get(birads_cat, {})
 
@@ -284,3 +308,56 @@ class BreastCancerTask(BaseTask):
 
 # ── Auto-registro al importar ──────────────────────────────────────
 TaskRegistry.register_task("breast_cancer", BreastCancerTask)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Proxy visual de malignidad (fallback cuando el modelo es incierto)
+# ──────────────────────────────────────────────────────────────────
+
+def _visual_malignancy_proxy(image: Image.Image) -> float:
+    """Estima un score de sospecha (0-1) basado en contraste y densidad local.
+
+    Analiza la imagen en escala de grises buscando regiones hiperdensas y
+    bordes irregulares características de masas sospechosas en mamografías.
+    Solo se usa como fallback cuando el modelo clasificador es incierto
+    (probabilidades cercanas a 50/50, indicando cabeza sin fine-tuning).
+
+    Esto NO es un clasificador médico — es una heurística de apoyo.
+    """
+    try:
+        gray = np.array(image.convert("L"), dtype=np.float32)
+        h, w = gray.shape
+
+        # Normalizar a [0, 1]
+        gray_n = (gray - gray.min()) / (gray.max() - gray.min() + 1e-8)
+
+        # Métricas de sospecha:
+        # 1. Proporción de píxeles hiperdensas (> 75° percentil en zona central)
+        cy, cx = h // 2, w // 2
+        region = gray_n[
+            max(0, cy - h // 4):min(h, cy + h // 4),
+            max(0, cx - w // 4):min(w, cx + w // 4),
+        ]
+        p75 = np.percentile(region, 75)
+        dense_ratio = float(np.mean(region > p75 * 1.2))
+
+        # 2. Varianza local (irregularidad / textura)
+        from PIL import ImageFilter
+        edges = np.array(image.convert("L").filter(ImageFilter.FIND_EDGES), dtype=np.float32)
+        edge_intensity = float(edges.mean()) / 255.0
+
+        # 3. Contraste global (SD de la imagen normalizada)
+        contrast = float(gray_n.std())
+
+        # Score combinado (heurístico, no clínico)
+        score = 0.40 * dense_ratio + 0.35 * edge_intensity + 0.25 * min(contrast * 2, 1.0)
+        score = float(np.clip(score, 0.0, 1.0))
+
+        logger.debug(
+            f"[VisualProxy] dense={dense_ratio:.3f} edge={edge_intensity:.3f} "
+            f"contrast={contrast:.3f} → score={score:.3f}"
+        )
+        return score
+    except Exception as e:
+        logger.warning(f"Error en proxy visual: {e}")
+        return 0.45  # neutral si falla

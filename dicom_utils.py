@@ -186,12 +186,77 @@ def extract_metadata(ds) -> Dict:
 # Carga unificada (DICOM + imágenes estándar)
 # ──────────────────────────────────────────────────────────────────
 
+def load_pgm(
+    file_path: str | Path,
+) -> Tuple[np.ndarray, Dict]:
+    """Carga un archivo PGM (Portable GrayMap) — formato original CBIS-DDSM.
+
+    Soporta PGM ASCII (P2) y binario (P5), incluyendo imágenes de 16-bit
+    que PIL no puede leer directamente.
+
+    Returns:
+        Tuple (array uint8 normalizado, metadata dict)
+    """
+    file_path = Path(file_path)
+
+    # Intentar con PIL primero (soporta P2/P5 8-bit)
+    try:
+        arr = np.array(Image.open(file_path), dtype=np.float32)
+        meta = {"Filename": file_path.name, "Format": "PGM",
+                "BitDepth": "8-bit (PIL)"}
+        arr = auto_normalize(arr).astype(np.uint8)
+        return arr, meta
+    except Exception:
+        pass
+
+    # Fallback manual para PGM binario 16-bit (P5 con maxval > 255)
+    with open(file_path, "rb") as f:
+        raw = f.read()
+
+    lines = raw.split(b"\n")
+    idx = 0
+    magic = lines[idx].decode().strip()
+    if magic not in ("P2", "P5"):
+        raise ValueError(f"Formato PGM no reconocido: {magic}")
+    idx += 1
+
+    while lines[idx].startswith(b"#"):
+        idx += 1
+
+    cols, rows = map(int, lines[idx].decode().split())
+    idx += 1
+    maxval = int(lines[idx].decode().strip())
+    idx += 1
+
+    header_size = sum(len(l) + 1 for l in lines[:idx])
+
+    if magic == "P5":
+        dtype = np.uint16 if maxval > 255 else np.uint8
+        data = np.frombuffer(raw[header_size:], dtype=dtype)
+        data = data.reshape((rows, cols)).astype(np.float32)
+    else:  # P2 ASCII
+        tokens = b" ".join(lines[idx:]).split()
+        data = np.array([int(t) for t in tokens], dtype=np.float32).reshape((rows, cols))
+
+    arr = auto_normalize(data).astype(np.uint8)
+    meta = {
+        "Filename": file_path.name,
+        "Format": "PGM",
+        "BitDepth": f"{16 if maxval > 255 else 8}-bit",
+        "MaxVal": str(maxval),
+        "Size": f"{cols} × {rows} px",
+    }
+    logger.info(f"PGM cargado: {file_path.name} | {cols}×{rows} | maxval={maxval}")
+    return arr, meta
+
+
 def load_image(
     file_path: str | Path,
     pixel_spacing_fallback: float = 0.07,
 ) -> Tuple[Image.Image, float, Dict]:
-    """Carga cualquier imagen (DICOM o PNG/JPG) y retorna PIL, pixel_spacing y metadatos.
+    """Carga cualquier imagen (DICOM, PGM, PNG, JPG, etc.) y retorna PIL, pixel_spacing y metadatos.
 
+    Formatos soportados: .dcm, .pgm, .png, .jpg, .jpeg, .tiff, .bmp, .webp
     Para imágenes no-DICOM, pixel_spacing proviene del valor fallback
     o de la calibración manual en la UI.
     """
@@ -202,11 +267,19 @@ def load_image(
         array, spacing, meta = load_dicom(file_path)
         pil_img = Image.fromarray(array, mode="L").convert("RGB")
         return pil_img, spacing, meta
+
+    elif suffix == ".pgm":
+        array, meta = load_pgm(file_path)
+        meta["Note"] = "PGM — pixel spacing aproximado"
+        meta["Size"] = f"{array.shape[1]} × {array.shape[0]} px"
+        pil_img = Image.fromarray(array, mode="L").convert("RGB")
+        return pil_img, pixel_spacing_fallback, meta
+
     else:
         try:
             pil_img = Image.open(file_path).convert("RGB")
         except Exception as e:
-            raise ValueError(f"No se puede abrir la imagen: {e}")
+            raise ValueError(f"No se puede abrir la imagen '{file_path.name}': {e}")
 
         meta = {
             "Filename": file_path.name,

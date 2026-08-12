@@ -95,7 +95,8 @@ def _build_efficientnet(meta, weights_path, device):
     import timm
     timm_id   = meta.get("timm_id", "efficientnet_b4")
     n_classes = len(meta.get("classes", ["Benigno", "Maligno"]))
-    model     = timm.create_model(timm_id, pretrained=False, num_classes=n_classes)
+    use_pretrained = not weights_path.exists()  # si no hay pesos locales, usar ImageNet
+    model     = timm.create_model(timm_id, pretrained=use_pretrained, num_classes=n_classes)
     _try_load_weights(model, weights_path, device)
     return model
 
@@ -104,7 +105,8 @@ def _build_convnext(meta, weights_path, device):
     import timm
     timm_id   = meta.get("timm_id", "convnext_small")
     n_classes = len(meta.get("classes", ["Benigno", "Maligno"]))
-    model     = timm.create_model(timm_id, pretrained=False, num_classes=n_classes)
+    use_pretrained = not weights_path.exists()
+    model     = timm.create_model(timm_id, pretrained=use_pretrained, num_classes=n_classes)
     _try_load_weights(model, weights_path, device)
     return model
 
@@ -113,7 +115,8 @@ def _build_vit(meta, weights_path, device):
     import timm
     timm_id   = meta.get("timm_id", "vit_base_patch16_224")
     n_classes = len(meta.get("classes", ["Benigno", "Maligno"]))
-    model     = timm.create_model(timm_id, pretrained=False, num_classes=n_classes)
+    use_pretrained = not weights_path.exists()
+    model     = timm.create_model(timm_id, pretrained=use_pretrained, num_classes=n_classes)
     _try_load_weights(model, weights_path, device)
     return model
 
