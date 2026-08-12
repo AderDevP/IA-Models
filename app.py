@@ -944,7 +944,12 @@ def build_app() -> gr.Blocks:
 # ══════════════════════════════════════════════════════════════════
 
 def launch_app(demo: gr.Blocks, **kwargs) -> Any:
-    """Lanza el dashboard Gradio compatible con Gradio 4, 5 y 6."""
+    """Lanza el dashboard Gradio reconectando puertos automáticamente si están ocupados."""
+    try:
+        gr.close_all()
+    except Exception:
+        pass
+
     theme = gr.themes.Soft(
         primary_hue="pink",
         secondary_hue="indigo",
@@ -952,7 +957,6 @@ def launch_app(demo: gr.Blocks, **kwargs) -> Any:
     )
     launch_kwargs = {
         "server_name": "0.0.0.0",
-        "server_port": 7860,
         "share": True,
         "show_error": True,
         "quiet": False,
@@ -961,11 +965,15 @@ def launch_app(demo: gr.Blocks, **kwargs) -> Any:
 
     gr_ver = getattr(gr, "__version__", "4.0")
     if not gr_ver.startswith(("3", "4")):
-        # Gradio 5/6+ soporta css y theme en launch()
         launch_kwargs["theme"] = theme
         launch_kwargs["css"] = CSS
 
-    return demo.launch(**launch_kwargs)
+    try:
+        return demo.launch(**launch_kwargs)
+    except OSError as e:
+        logger.warning(f"Puerto ocupado ({e}). Reintentando asignación de puerto dinámica...")
+        launch_kwargs.pop("server_port", None)
+        return demo.launch(**launch_kwargs)
 
 
 if __name__ == "__main__":
