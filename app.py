@@ -98,15 +98,19 @@ def run_diagnosis(
     pixel_spacing: float,
     confidence_threshold: float,
     generate_gradcam: bool,
+    dual_mode: bool = False,
     progress=gr.Progress(track_tqdm=True),
 ) -> Tuple:
-    """Callback principal de inferencia — conectado al botón 'Analizar'."""
-
+    """Callback principal de inferencia.
+    
+    Si dual_mode=True: corre YOLOv8 para señalizar lesiones Y el clasificador
+    elegido para el diagnóstico final — ambos resultados se muestran juntos.
+    """
     if image_file is None:
         return (
             None, None,
             "❌ Por favor, sube una imagen primero.",
-            {}, [], None, None,
+            "<div>—</div>", [], None, None,
         )
 
     try:
@@ -117,34 +121,104 @@ def run_diagnosis(
         img_path = Path(image_file.name) if hasattr(image_file, "name") else Path(image_file)
         pil_image, auto_spacing, dicom_meta = load_image(img_path, pixel_spacing_fallback=pixel_spacing)
 
-        # Usar pixel_spacing del DICOM si disponible (y != fallback)
         effective_spacing = auto_spacing if abs(auto_spacing - DEFAULT_PIXEL_SPACING_MM) > 1e-5 else pixel_spacing
 
-        progress(0.3, desc="Cargando modelo...")
-
-        # ── Cargar tarea y modelo ─────────────────────────────────
         task_id  = parse_task_id_from_choice(task_choice)
         model_id = parse_model_id_from_choice(model_choice)
 
         task = TaskRegistry.load_task(task_id)
         if task is None:
-            return (None, None, f"❌ Tarea '{task_id}' no disponible.", {}, [], None, None)
+            return (None, None, f"❌ Tarea '{task_id}' no disponible.", "<div>—</div>", [], None, None)
 
-        progress(0.5, desc="Ejecutando inferencia...")
-
-        # ── Pipeline de diagnóstico ───────────────────────────────
-        from detector import full_diagnostic_pipeline
+        from detector import full_diagnostic_pipeline, run_yolo_inference, load_yolo_model, draw_bounding_boxes
+        from config import PRETRAINED_MODELS, DEFAULT_DETECTOR_ID
 
         device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
-        annotated, heatmap, report = full_diagnostic_pipeline(
-            image=pil_image,
-            model_id=model_id,
-            task=task,
-            pixel_spacing=effective_spacing,
-            confidence_threshold=confidence_threshold,
-            generate_gradcam=generate_gradcam,
-            device=device,
-        )
+
+        selected_meta = PRETRAINED_MODELS.get(model_id, {})
+        is_yolo       = selected_meta.get("task_type") == "detection_yolo"
+
+        # ══════════════════════════════════════════════════════
+        # MODO DUAL: Clasificador (resultado) + YOLO (señalar)
+        # ══════════════════════════════════════════════════════
+        if dual_mode and not is_yolo:
+            progress(0.3, desc="Cargando clasificador...")
+            logger.info(f"[DUAL] Clasificador: {model_id}")
+
+            _, _, clf_report = full_diagnostic_pipeline(
+                image=pil_image,
+                model_id=model_id,
+                task=task,
+                pixel_spacing=effective_spacing,
+                confidence_threshold=confidence_threshold,
+                generate_gradcam=generate_gradcam,
+                device=device,
+            )
+            heatmap_source = pil_image  # se sobreescribe abajo si hay gradcam
+
+            progress(0.6, desc="Cargando YOLOv8 para señalización...")
+            logger.info(f"[DUAL] Detector YOLO: {DEFAULT_DETECTOR_ID}")
+
+            try:
+                yolo_model, yolo_meta = load_yolo_model(DEFAULT_DETECTOR_ID)
+                yolo_report = run_yolo_inference(
+                    pil_image, yolo_model, yolo_meta,
+                    pixel_spacing=effective_spacing,
+                    confidence_threshold=confidence_threshold,
+                    device=device,
+                )
+                # Imagen señalizada por YOLO
+                annotated = draw_bounding_boxes(pil_image, yolo_report.get("detections", []))
+                detections = yolo_report.get("detections", [])
+                logger.info(f"[DUAL] YOLO detectó {len(detections)} lesiones")
+            except Exception as yolo_err:
+                logger.warning(f"[DUAL] YOLO falló ({yolo_err}), usando imagen original")
+                annotated  = pil_image.copy()
+                detections = []
+
+            # Resultado del clasificador + detecciones de YOLO
+            report = clf_report.copy()
+            report["detections"] = detections
+            if detections:
+                # Si YOLO encontró lesiones, actualizar BIRADS combinado
+                max_conf   = max(d["confidence"] for d in detections) / 100
+                malignant  = any("malignant" in d["class"] for d in detections)
+                yolo_prob  = min(max_conf * (1.2 if malignant else 0.8), 1.0)
+                clf_prob   = clf_report.get("classification", {}).get("confidence", 50) / 100
+                combined   = 0.6 * clf_prob + 0.4 * yolo_prob
+                birads_cat = _combined_birads(combined)
+                report["birads"]      = birads_cat
+                report["birads_info"] = BIRADS_CATEGORIES.get(birads_cat, {})
+
+            # Agregar nota dual al reporte
+            clf_info = clf_report.get("classification", {})
+            dual_note = (
+                f"\n{'─'*48}\n"
+                f"🔀 MODO DUAL ACTIVO\n"
+                f"   Clasificador ({model_id}):\n"
+                f"   → {clf_info.get('predicted_class','N/A')} "
+                f"({clf_info.get('confidence',0):.1f}% confianza)\n"
+                f"   YOLO ({DEFAULT_DETECTOR_ID}):\n"
+                f"   → {len(detections)} lesión(es) señalizada(s)\n"
+                f"{'─'*48}"
+            )
+            report["report_text"] = report.get("report_text", "") + dual_note
+
+        # ══════════════════════════════════════════════════════
+        # MODO NORMAL: solo el modelo elegido
+        # ══════════════════════════════════════════════════════
+        else:
+            progress(0.4, desc="Ejecutando inferencia...")
+            annotated, heatmap_source, report = full_diagnostic_pipeline(
+                image=pil_image,
+                model_id=model_id,
+                task=task,
+                pixel_spacing=effective_spacing,
+                confidence_threshold=confidence_threshold,
+                generate_gradcam=generate_gradcam,
+                device=device,
+            )
+            detections = report.get("detections", [])
 
         progress(0.9, desc="Generando reporte...")
 
@@ -152,38 +226,51 @@ def run_diagnosis(
         report_text    = report.get("report_text", "")
         birads         = report.get("birads", 0)
         birads_info    = BIRADS_CATEGORIES.get(birads, {})
-        detections     = report.get("detections", [])
         classification = report.get("classification", {})
 
-        # Tabla de detecciones para gr.Dataframe
+        # Tabla de detecciones — incluye diámetro px, mm y área
         det_rows = [
             [
-                d["id"], d["class"], f"{d['confidence']:.1f}%",
-                f"{d['diameter_mm']:.2f}", f"{d['area_mm2']:.2f}",
+                d["id"],
+                d["class"],
+                f"{d['confidence']:.1f}%",
+                f"{d['width_px']} × {d['height_px']} px",
+                f"{d['diameter_mm']:.2f} mm",
+                f"{d['area_mm2']:.2f} mm²",
                 str(d["bbox_px"]),
             ]
             for d in detections
-        ] if detections else [["—", "Sin lesiones detectadas", "—", "—", "—", "—"]]
+        ] if detections else [["—", "Sin lesiones detectadas", "—", "—", "—", "—", "—"]]
 
-        # BIRADS badge HTML
+        # BIRADS + clasificación en HTML
         birads_color = birads_info.get("color", "#808080")
-        birads_html  = (
+        clf_class    = classification.get("predicted_class", "—")
+        clf_conf     = classification.get("confidence", 0)
+
+        birads_html = (
+            f'<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">'
             f'<div style="background:{birads_color};color:white;padding:12px 20px;'
-            f'border-radius:8px;font-size:18px;font-weight:bold;display:inline-block;">'
+            f'border-radius:8px;font-size:18px;font-weight:bold;">'
             f'{birads_info.get("label","BIRADS ?")} — {birads_info.get("meaning","")}'
+            f'</div>'
+            f'<div style="background:#1e293b;color:#94a3b8;padding:10px 16px;'
+            f'border-radius:8px;font-size:14px;border:1px solid #334155;">'
+            f'🧠 Clasificación: <strong style="color:#e2e8f0">{clf_class}</strong> '
+            f'({clf_conf:.1f}% confianza)'
+            f'</div>'
             f'</div>'
         )
 
         progress(1.0, desc="¡Diagnóstico completado!")
 
         return (
-            annotated,             # img_output
-            heatmap,               # img_heatmap
-            report_text,           # txt_report
-            birads_html,           # html_birads
-            det_rows,              # table_detections
-            report,                # state_report (para exportar)
-            pil_image,             # state_original_img
+            annotated,
+            pil_image if dual_mode else (locals().get("heatmap_source") or pil_image),
+            report_text,
+            birads_html,
+            det_rows,
+            report,
+            pil_image,
         )
 
     except Exception as e:
@@ -193,6 +280,18 @@ def run_diagnosis(
             f"❌ Error durante el diagnóstico:\n{e}",
             "<div>Error</div>", [], None, None,
         )
+
+
+def _combined_birads(prob: float) -> int:
+    """Estima BIRADS desde probabilidad combinada clasificador+YOLO."""
+    if prob < 0.02:  return 1
+    if prob < 0.10:  return 2
+    if prob < 0.30:  return 3
+    if prob < 0.60:  return 4
+    if prob < 0.95:  return 5
+    return 6
+
+
 
 
 def export_report_pdf(report: Optional[Dict], original_image, annotated_image) -> Optional[str]:
@@ -685,6 +784,11 @@ def build_app() -> gr.Blocks:
                         gradcam_toggle = gr.Checkbox(
                             value=True, label="Generar Grad-CAM / Heatmap de atención"
                         )
+                        dual_mode_toggle = gr.Checkbox(
+                            value=False,
+                            label="🔀 Modo Dual: Clasificador + YOLO señalizador",
+                            info="Corre el clasificador elegido PARA el resultado Y YOLOv8 PARA señalizar lesiones en la imagen",
+                        )
 
                     btn_analyze = gr.Button(
                         "🔍 Analizar Mamografía", variant="primary", size="lg"
@@ -707,7 +811,7 @@ def build_app() -> gr.Blocks:
 
                     gr.Markdown("#### 🎯 Tabla de Lesiones Detectadas")
                     table_detections = gr.Dataframe(
-                        headers=["#", "Tipo", "Confianza", "Diámetro (mm)", "Área (mm²)", "BBox (px)"],
+                        headers=["#", "Tipo", "Confianza", "Tamaño (px)", "Diámetro (mm)", "Área (mm²)", "BBox (px)"],
                         interactive=False,
                     )
 
@@ -722,7 +826,7 @@ def build_app() -> gr.Blocks:
                 fn=run_diagnosis,
                 inputs=[
                     image_input, task_selector, model_selector,
-                    spacing_slider, confidence_slider, gradcam_toggle,
+                    spacing_slider, confidence_slider, gradcam_toggle, dual_mode_toggle,
                 ],
                 outputs=[
                     img_output, img_heatmap,
