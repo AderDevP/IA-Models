@@ -877,6 +877,7 @@ def build_app() -> gr.Blocks:
                     use_cbis_ddsm = gr.Checkbox(
                         value=False,
                         label="Usar CBIS-DDSM (descarga automática ~10 GB)",
+                        interactive=True,
                     )
                     data_zip = gr.File(
                         label="O sube tu dataset (.zip con carpetas con_cancer / sin_cancer)",

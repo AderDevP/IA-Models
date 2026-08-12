@@ -61,12 +61,14 @@ def load_yolo_model(model_id: str, force_reload: bool = False) -> Tuple[Any, Dic
     if weights_path.exists():
         logger.info(f"Cargando YOLO desde disco: {weights_path}")
         model = YOLO(str(weights_path))
+        meta["is_coco_fallback"] = False
     else:
         logger.warning(
             f"Pesos YOLO no encontrados: {weights_path}. "
             f"Cargando pesos COCO base ({variant}) como fallback."
         )
         model = YOLO(f"{variant}.pt")  # descarga automáticamente de Ultralytics
+        meta["is_coco_fallback"] = True
 
     _yolo_cache[model_id] = model
     logger.info(f"YOLO cargado: {meta['name']}")
@@ -401,6 +403,15 @@ def _build_yolo_report_text(detections, birads_cat, birads_info, model_meta) -> 
         f"   {birads_info.get('meaning', '')}",
         "",
     ]
+    if model_meta.get("is_coco_fallback"):
+        lines += [
+            "⚠️ ATENCIÓN: Se están usando los pesos base (COCO) de YOLOv8.",
+            "   El modelo NO HA SIDO ENTRENADO en mamografías, por lo que NO detectará",
+            "   masas ni calcificaciones hasta que se realice el Fine-Tuning en la",
+            "   pestaña de Entrenamiento.",
+            "",
+        ]
+
     if detections:
         lines.append(f"🎯 LESIONES DETECTADAS: {len(detections)}")
         for d in detections:

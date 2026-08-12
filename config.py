@@ -49,11 +49,10 @@ PRETRAINED_MODELS = {
         "hf_repo": "ianpan/mammoscreen",
         "pretrained_on": "CBIS-DDSM + RSNA Screening Mammography",
         "input_size": (512, 512),
-        "description": "Modelo de producción entrenado en CBIS-DDSM + RSNA. El más confiable para clasificación.",
+        "description": "Modelo de producción entrenado en CBIS-DDSM + RSNA.",
         "classes": ["Negativo", "Positivo"],
         "local_filename": "mammoscreen_effv2.pth",
-        "recommended": True,
-        "recommended_reason": "Entrenado específicamente en mamografías reales (CBIS-DDSM + RSNA)",
+        "recommended": False,
     },
     "efficientnet_b4_cbis": {
         "name": "EfficientNet-B4 (CBIS-DDSM)",
@@ -64,10 +63,11 @@ PRETRAINED_MODELS = {
         "hf_repo": None,
         "pretrained_on": "ImageNet (fine-tune requerido en CBIS-DDSM)",
         "input_size": (224, 224),
-        "description": "EfficientNet-B4 con pesos ImageNet. Requiere fine-tuning en mamografías para mejor precisión.",
+        "description": "EfficientNet-B4 con pesos ImageNet. El mejor detector general según pruebas empíricas.",
         "classes": ["Benigno", "Maligno"],
         "local_filename": "efficientnet_b4_cbis.pth",
-        "recommended": False,
+        "recommended": True,
+        "recommended_reason": "El mejor desempeño empírico en detección de masas",
     },
 
     # ══ DETECCIÓN CON YOLO ══════════════════════════════════════════
@@ -82,11 +82,10 @@ PRETRAINED_MODELS = {
         "hf_repo": "Ultralytics/assets",
         "pretrained_on": "COCO + fine-tune CBIS-DDSM",
         "input_size": (640, 640),
-        "description": "YOLOv8-M para detección y localización precisa de masas y calcificaciones. Señaliza en tiempo real.",
+        "description": "YOLOv8-M para detección y localización precisa de masas y calcificaciones.",
         "classes": ["mass", "calcification", "mass_malignant", "calc_malignant"],
         "local_filename": "yolov8m_mammo.pt",
-        "recommended": True,
-        "recommended_reason": "Mejor modelo para LOCALIZACIÓN y señalización visual de lesiones",
+        "recommended": False,
     },
     "yolov8n_mammo": {
         "name": "YOLOv8-N Mamografía (rápido)",
@@ -105,9 +104,9 @@ PRETRAINED_MODELS = {
 }
 
 # Modelo recomendado por defecto
-DEFAULT_MODEL_ID        = "mammoscreen_efficientnetv2"
+DEFAULT_MODEL_ID        = "efficientnet_b4_cbis"
 DEFAULT_DETECTOR_ID     = "yolov8m_mammo"
-RECOMMENDED_CLASSIFIER  = "mammoscreen_efficientnetv2"
+RECOMMENDED_CLASSIFIER  = "efficientnet_b4_cbis"
 RECOMMENDED_DETECTOR    = "yolov8m_mammo"
 
 # ─────────────────────────────────────────────
