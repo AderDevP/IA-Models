@@ -41,18 +41,19 @@ PRETRAINED_MODELS = {
 
     # ══ CLASIFICADORES ══════════════════════════════════════════════
 
-    "mammoscreen_efficientnetv2": {
-        "name": "MammoScreen EfficientNetV2",
-        "architecture": "EfficientNetV2-M",
-        "task_type": "classification",
+    "medgemma_cbis_ddsm": {
+        "name": "MedGemma 4B (CBIS-DDSM Masses)",
+        "architecture": "MedGemma (VLM)",
+        "task_type": "vlm_classification",
         "source": "huggingface",
-        "hf_repo": "ianpan/mammoscreen",
-        "pretrained_on": "CBIS-DDSM + RSNA Screening Mammography",
-        "input_size": (512, 512),
-        "description": "Modelo de producción entrenado en CBIS-DDSM + RSNA.",
-        "classes": ["Negativo", "Positivo"],
-        "local_filename": "mammoscreen_effv2.pth",
-        "recommended": False,
+        "hf_repo": "ArnauMuns/medgemma-masses-cbis-ddsm",
+        "pretrained_on": "CBIS-DDSM (Fine-tuned from google/medgemma-4b-it)",
+        "input_size": (896, 896),
+        "description": "Modelo Multimodal de Lenguaje Visual especializado en diagnóstico radiológico.",
+        "classes": ["Benigno", "Maligno"],
+        "local_filename": "medgemma_adapter",
+        "recommended": True,
+        "recommended_reason": "Razonamiento visual-lingüístico avanzado en CBIS-DDSM.",
     },
     "efficientnet_b4_cbis": {
         "name": "EfficientNet-B4 (CBIS-DDSM)",

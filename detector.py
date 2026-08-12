@@ -103,6 +103,13 @@ def load_model(
     arch = meta["architecture"].lower()
 
     # ── Construir arquitectura ────────────────────────────────────
+    if task_type == "vlm_classification" or "medgemma" in arch:
+        model = _build_vlm(meta, weights_path, device)
+        # Los VLM con device_map='auto' se manejan a sí mismos
+        _model_cache[model_id] = model
+        logger.info(f"VLM Modelo cargado: {meta['name']}")
+        return model, meta
+        
     if "efficientnet" in arch:
         model = _build_efficientnet(meta, weights_path, device)
     elif "convnext" in arch:
@@ -123,11 +130,54 @@ def load_model(
     return model, meta
 
 
+def _build_vlm(meta, weights_path, device):
+    """Carga un VLM (Vision-Language Model) usando transformers y bitsandbytes."""
+    try:
+        from transformers import AutoProcessor, AutoModelForImageTextToText
+        import torch
+
+        hf_repo = meta.get("hf_repo", "ArnauMuns/medgemma-masses-cbis-ddsm")
+        
+        # Intentar cargar en 4-bit para evitar OOM en GPUs pequeñas (ej. Colab T4)
+        try:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+            model = AutoModelForImageTextToText.from_pretrained(
+                hf_repo,
+                quantization_config=bnb_config,
+                device_map="auto"
+            )
+        except (ImportError, ValueError) as e:
+            logger.warning(f"BitsAndBytes falló o no está instalado ({e}). Usando fp16.")
+            model = AutoModelForImageTextToText.from_pretrained(
+                hf_repo,
+                torch_dtype=torch.float16,
+                device_map="auto"
+            )
+            
+        processor = AutoProcessor.from_pretrained(hf_repo)
+        
+        # Adjuntamos el processor al modelo para tenerlo disponible durante inferencia
+        model.processor = processor
+        model.eval()
+        return model
+    except ImportError as e:
+        logger.error(f"Error cargando VLM: {e}")
+        raise ImportError("Faltan librerías para VLM. Ejecuta: pip install transformers peft accelerate bitsandbytes")
+
+
 def _build_efficientnet(meta, weights_path, device):
     import timm
     timm_id   = meta.get("timm_id", "efficientnet_b4")
     n_classes = len(meta.get("classes", ["Benigno", "Maligno"]))
     use_pretrained = not weights_path.exists()  # si no hay pesos locales, usar ImageNet
+    
+    if use_pretrained:
+        meta["is_untrained"] = True
+        
     model     = timm.create_model(timm_id, pretrained=use_pretrained, num_classes=n_classes)
     _try_load_weights(model, weights_path, device)
     return model
@@ -138,6 +188,10 @@ def _build_convnext(meta, weights_path, device):
     timm_id   = meta.get("timm_id", "convnext_small")
     n_classes = len(meta.get("classes", ["Benigno", "Maligno"]))
     use_pretrained = not weights_path.exists()
+    
+    if use_pretrained:
+        meta["is_untrained"] = True
+        
     model     = timm.create_model(timm_id, pretrained=use_pretrained, num_classes=n_classes)
     _try_load_weights(model, weights_path, device)
     return model
@@ -148,6 +202,10 @@ def _build_vit(meta, weights_path, device):
     timm_id   = meta.get("timm_id", "vit_base_patch16_224")
     n_classes = len(meta.get("classes", ["Benigno", "Maligno"]))
     use_pretrained = not weights_path.exists()
+    
+    if use_pretrained:
+        meta["is_untrained"] = True
+        
     model     = timm.create_model(timm_id, pretrained=use_pretrained, num_classes=n_classes)
     _try_load_weights(model, weights_path, device)
     return model
@@ -166,6 +224,9 @@ def _build_fasterrcnn(meta, weights_path, device):
     # Reemplazar el clasificador final
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, n_classes)
+
+    if not weights_path.exists():
+        meta["is_untrained"] = True
 
     _try_load_weights(model, weights_path, device)
     return model
@@ -212,6 +273,119 @@ def _try_load_weights(model: nn.Module, weights_path: Path, device: str) -> None
 # ──────────────────────────────────────────────────────────────────
 # Inferencia principal
 # ──────────────────────────────────────────────────────────────────
+
+@torch.no_grad()
+def run_vlm_inference(
+    image: Image.Image,
+    model: nn.Module,
+    model_meta: Dict,
+    task,
+    pixel_spacing: float = DEFAULT_PIXEL_SPACING_MM,
+    device: str = "cpu",
+) -> Dict[str, Any]:
+    """Ejecuta inferencia con un modelo VLM (Vision-Language Model)."""
+    import time
+    start_t = time.time()
+    
+    prompt_text = "Analyze this mammogram for masses and predict malignancy. Output your response clearly."
+    
+    processor = getattr(model, "processor", None)
+    if not processor:
+        raise ValueError("El modelo VLM no tiene 'processor' adjunto.")
+        
+    inputs = processor(text=prompt_text, images=image, return_tensors="pt")
+    # Acomodar tipos para int4/fp16
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    if "pixel_values" in inputs:
+        inputs["pixel_values"] = inputs["pixel_values"].to(model.dtype)
+    
+    outputs = model.generate(**inputs, max_new_tokens=100)
+    generated_text = processor.decode(outputs[0], skip_special_tokens=True)
+    
+    # Parsear texto para extraer la predicción
+    text_lower = generated_text.lower()
+    is_malignant = any(word in text_lower for word in ["malignant", "maligno", "cancer", "tumor", "positive"])
+    is_benign = any(word in text_lower for word in ["benign", "benigno", "normal", "negative"])
+    
+    if is_malignant and not is_benign:
+        pred_class = "Maligno"
+        conf = 95.0
+        birads = 5
+    elif is_benign and not is_malignant:
+        pred_class = "Benigno"
+        conf = 90.0
+        birads = 2
+    elif is_malignant and is_benign:
+        pred_class = "Sospechoso"
+        conf = 70.0
+        birads = 4
+    else:
+        pred_class = "Desconocido (Ver reporte)"
+        conf = 50.0
+        birads = 0
+        
+    # Extraer bounding boxes (estilo PaliGemma <loc0000>)
+    detections = []
+    import re
+    loc_matches = re.findall(r'<loc(\d+)><loc(\d+)><loc(\d+)><loc(\d+)>', generated_text)
+    w, h = image.size
+    for idx, (y1, x1, y2, x2) in enumerate(loc_matches):
+        y1_px = int((int(y1) / 1024.0) * h)
+        x1_px = int((int(x1) / 1024.0) * w)
+        y2_px = int((int(y2) / 1024.0) * h)
+        x2_px = int((int(x2) / 1024.0) * w)
+        
+        diameter_mm = max(x2_px - x1_px, y2_px - y1_px) * pixel_spacing
+        area_mm2 = (x2_px - x1_px) * (y2_px - y1_px) * (pixel_spacing ** 2)
+        
+        detections.append({
+            "id": idx + 1,
+            "class": "Masa Detectada (VLM)",
+            "confidence": 100.0,
+            "bbox_px": [x1_px, y1_px, x2_px, y2_px],
+            "width_px": x2_px - x1_px,
+            "height_px": y2_px - y1_px,
+            "diameter_mm": round(diameter_mm, 2),
+            "area_mm2": round(area_mm2, 2),
+            "center_x_px": (x1_px + x2_px) // 2,
+            "center_y_px": (y1_px + y2_px) // 2,
+        })
+    
+    inference_time = time.time() - start_t
+    
+    try:
+        from tasks.breast_cancer import BIRADS_CATEGORIES
+    except ImportError:
+        BIRADS_CATEGORIES = {}
+    
+    report_text = f"╔══════════════════════════════════════════════╗\n"
+    report_text += f"║     REPORTE DIAGNÓSTICO VLM — MedGemma       ║\n"
+    report_text += f"╚══════════════════════════════════════════════╝\n\n"
+    report_text += f"🔬 ANÁLISIS DEL MODELO (TEXTO DIRECTO):\n"
+    report_text += f"   {generated_text.strip()}\n\n"
+    report_text += f"📋 CLASIFICACIÓN INTERPRETADA: {pred_class} (Confianza estimada: {conf}%)\n"
+    
+    if birads > 0:
+        birads_info = BIRADS_CATEGORIES.get(birads, {})
+        report_text += f"\n📋 BIRADS ESTIMADO: {birads_info.get('label', f'BIRADS {birads}')}\n   {birads_info.get('meaning', '')}\n"
+    
+    if detections:
+        report_text += f"\n🎯 LESIONES LOCALIZADAS POR VLM: {len(detections)}\n"
+        
+    return {
+        "classification": {
+            "predicted_class": pred_class,
+            "confidence": conf,
+            "probabilities": {"Maligno": conf if is_malignant else (100-conf), "Benigno": conf if is_benign else (100-conf)},
+        },
+        "birads": birads,
+        "birads_info": BIRADS_CATEGORIES.get(birads, {}),
+        "detections": detections,
+        "report_text": report_text,
+        "inference_time_ms": inference_time * 1000,
+    }
+
+
 
 @torch.no_grad()
 def run_inference(
@@ -655,6 +829,18 @@ def full_diagnostic_pipeline(
         # YOLO ya genera sus propias anotaciones con colores; también usamos draw_bounding_boxes
         annotated   = draw_bounding_boxes(image, report.get("detections", []))
         heatmap_img = image.copy()   # YOLO no usa Grad-CAM
+        return annotated, heatmap_img, report
+
+    # ── VLM (MedGemma, PaliGemma) ──
+    if task_type == "vlm_classification" or "medgemma" in arch:
+        report = run_vlm_inference(
+            image, model, meta, task,
+            pixel_spacing=pixel_spacing,
+            device=device,
+        )
+        annotated = draw_bounding_boxes(image, report.get("detections", []))
+        # VLM no soporta Grad-CAM por ahora
+        heatmap_img = image.copy()
         return annotated, heatmap_img, report
 
     # ── Modelos Torch (clasificadores / detectores Faster R-CNN / DETR) ──
