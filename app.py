@@ -621,15 +621,11 @@ def build_app() -> gr.Blocks:
     )
 
     blocks_kwargs = {"title": "MammoAI — Diagnóstico Inteligente"}
-    try:
-        import inspect
-        sig = inspect.signature(gr.Blocks.__init__)
-        if "css" in sig.parameters and getattr(gr, "__version__", "").startswith(("4", "3")):
-            blocks_kwargs["css"] = CSS
-        if "theme" in sig.parameters and getattr(gr, "__version__", "").startswith(("4", "3")):
-            blocks_kwargs["theme"] = theme
-    except Exception:
-        pass
+    # En Gradio 4/3, theme y css van en gr.Blocks. En Gradio 5/6, van en launch().
+    gr_ver = getattr(gr, "__version__", "4.0")
+    if gr_ver.startswith(("3", "4")):
+        blocks_kwargs["css"] = CSS
+        blocks_kwargs["theme"] = theme
 
     with gr.Blocks(**blocks_kwargs) as demo:
 
@@ -949,6 +945,31 @@ def build_app() -> gr.Blocks:
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════════
 
+def launch_app(demo: gr.Blocks, **kwargs) -> Any:
+    """Lanza el dashboard Gradio compatible con Gradio 4, 5 y 6."""
+    theme = gr.themes.Soft(
+        primary_hue="pink",
+        secondary_hue="indigo",
+        neutral_hue="slate",
+    )
+    launch_kwargs = {
+        "server_name": "0.0.0.0",
+        "server_port": 7860,
+        "share": True,
+        "show_error": True,
+        "quiet": False,
+    }
+    launch_kwargs.update(kwargs)
+
+    gr_ver = getattr(gr, "__version__", "4.0")
+    if not gr_ver.startswith(("3", "4")):
+        # Gradio 5/6+ soporta css y theme en launch()
+        launch_kwargs["theme"] = theme
+        launch_kwargs["css"] = CSS
+
+    return demo.launch(**launch_kwargs)
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -968,10 +989,5 @@ if __name__ == "__main__":
     logger.info(f"   Tareas habilitadas:  {len([t for t in MEDICAL_TASKS.values() if t['enabled']])}")
 
     demo = build_app()
-    demo.launch(
-        server_name=args.host,
-        server_port=args.port,
-        share=share,
-        show_error=True,
-        quiet=False,
-    )
+    launch_app(demo, share=share, server_name=args.host, server_port=args.port)
+
