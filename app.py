@@ -20,38 +20,6 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import gradio as gr
-import inspect
-import re
-
-def _patch_gradio_compat():
-    """Monkey-patch universal que elimina automáticamente cualquier parámetro
-    desactualizado en Gradio 5.x / 6.x (show_copy_button, height, etc.)"""
-    for name, cls in list(gr.__dict__.items()):
-        if isinstance(cls, type) and hasattr(cls, "__init__"):
-            try:
-                orig_init = cls.__init__
-                if getattr(orig_init, "_mammo_patched", False):
-                    continue
-                def _wrap(init_fn):
-                    def _safe_init(self, *args, **kwargs):
-                        while True:
-                            try:
-                                return init_fn(self, *args, **kwargs)
-                            except TypeError as e:
-                                msg = str(e)
-                                if "unexpected keyword argument" in msg:
-                                    m = re.search(r"unexpected keyword argument '([^']+)'", msg)
-                                    if m and m.group(1) in kwargs:
-                                        kwargs.pop(m.group(1), None)
-                                        continue
-                                raise e
-                    _safe_init._mammo_patched = True
-                    return _safe_init
-                cls.__init__ = _wrap(orig_init)
-            except Exception:
-                pass
-
-_patch_gradio_compat()
 import plotly.graph_objects as go
 from PIL import Image
 
