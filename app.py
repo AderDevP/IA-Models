@@ -20,6 +20,22 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 import gradio as gr
+
+# ── Monkey-patch para compatibilidad universal con Gradio 4, 5 y 6 ──
+_orig_textbox_init = gr.Textbox.__init__
+def _safe_textbox_init(self, *args, **kwargs):
+    kwargs.pop("show_copy_button", None)
+    return _orig_textbox_init(self, *args, **kwargs)
+gr.Textbox.__init__ = _safe_textbox_init
+
+_orig_blocks_init = gr.Blocks.__init__
+def _safe_blocks_init(self, *args, **kwargs):
+    gr_ver = getattr(gr, "__version__", "4.0")
+    if not gr_ver.startswith(("3", "4")):
+        kwargs.pop("theme", None)
+        kwargs.pop("css", None)
+    return _orig_blocks_init(self, *args, **kwargs)
+gr.Blocks.__init__ = _safe_blocks_init
 import plotly.graph_objects as go
 from PIL import Image
 
