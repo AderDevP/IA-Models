@@ -665,17 +665,75 @@ def full_diagnostic_pipeline(
         device=device,
     )
 
-    # 3. Dibujar bounding boxes
+    # 4. Grad-CAM y WSOL (Weakly Supervised Object Localization)
+    heatmap_img = image.copy()
+    arch = meta["architecture"].lower()
+    is_classifier = not any(x in arch for x in ["faster r-cnn", "fasterrcnn", "detr", "yolo"])
+    
+    if is_classifier:
+        cam = compute_gradcam(image, model, meta, task, device=device)
+        if cam is not None:
+            if generate_gradcam:
+                heatmap_img = overlay_heatmap(image, cam)
+            
+            # ── WSOL: Extraer BBox desde el mapa de calor ──
+            # Si el clasificador detectó malignidad pero no hay boxes, usamos el Grad-CAM
+            clf = report.get("classification", {})
+            pred_class = clf.get("predicted_class")
+            conf = clf.get("confidence", 0)
+            
+            if not report.get("detections") and (pred_class in ["Maligno", "Sospechoso"] or conf > 50.0):
+                wsol_det = _extract_bbox_from_cam(cam, image.size, pixel_spacing, conf)
+                if wsol_det:
+                    report["detections"] = [wsol_det]
+                    report["report_text"] = report.get("report_text", "") + \
+                        "\n💡 Nota: Se utilizó el mapa de atención (Grad-CAM) para sugerir la ubicación de la lesión."
+
+    # 3. Dibujar bounding boxes (ahora incluye las de WSOL si se generaron)
     annotated = draw_bounding_boxes(image, report.get("detections", []))
 
-    # 4. Grad-CAM (solo para clasificadores, no para detectores)
-    heatmap_img = image.copy()
-    if generate_gradcam:
-        arch = meta["architecture"].lower()
-        if not any(x in arch for x in ["faster r-cnn", "fasterrcnn", "detr", "yolo"]):
-            cam = compute_gradcam(image, model, meta, task, device=device)
-            if cam is not None:
-                heatmap_img = overlay_heatmap(image, cam)
-
     return annotated, heatmap_img, report
+
+def _extract_bbox_from_cam(cam: np.ndarray, img_size: Tuple[int, int], pixel_spacing: float, conf: float) -> Optional[Dict]:
+    """Extrae un bounding box del mapa de atención Grad-CAM (WSOL)."""
+    import cv2
+    import numpy as np
+    
+    # Binarizar el heatmap (quedarse con el 30% más caliente)
+    threshold = np.max(cam) * 0.7
+    mask = (cam >= threshold).astype(np.uint8) * 255
+    
+    # Redimensionar la máscara al tamaño de la imagen original
+    w, h = img_size
+    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+    
+    # Encontrar contornos
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+        
+    # Quedarse con el contorno más grande
+    largest_contour = max(contours, key=cv2.contourArea)
+    x, y, cw, ch = cv2.boundingRect(largest_contour)
+    
+    # Si la caja es muy pequeña (ruido), ignorarla
+    if cw < 5 or ch < 5:
+        return None
+        
+    x2, y2 = x + cw, y + ch
+    diameter_mm = max(cw, ch) * pixel_spacing
+    area_mm2 = cw * ch * (pixel_spacing ** 2)
+    
+    return {
+        "id": 1,
+        "class": "Maligno (Sugerido por CAM)",
+        "confidence": conf,
+        "bbox_px": [x, y, x2, y2],
+        "width_px": cw,
+        "height_px": ch,
+        "diameter_mm": round(diameter_mm, 2),
+        "area_mm2": round(area_mm2, 2),
+        "center_x_px": x + cw // 2,
+        "center_y_px": y + ch // 2,
+    }
 

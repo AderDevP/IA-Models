@@ -328,7 +328,7 @@ def export_report_json(report: Optional[Dict]) -> Optional[str]:
 
 def start_training(
     data_zip,
-    use_cbis_ddsm: bool,
+    dataset_choice: str,
     task_choice_train: str,
     model_choice_train: str,
     epochs: int,
@@ -339,6 +339,8 @@ def start_training(
     progress=gr.Progress(track_tqdm=True),
 ):
     """Callback de entrenamiento — generator para actualizar UI en tiempo real."""
+    
+    use_cbis_ddsm = (dataset_choice == "Usar CBIS-DDSM (Automático)")
 
     task_id  = parse_task_id_from_choice(task_choice_train)
     model_id = parse_model_id_from_choice(model_choice_train)
@@ -874,15 +876,25 @@ def build_app() -> gr.Blocks:
                     )
 
                     gr.Markdown("#### 📦 Dataset")
-                    use_cbis_ddsm = gr.Checkbox(
-                        value=False,
-                        label="Usar CBIS-DDSM (descarga automática ~10 GB)",
-                        interactive=True,
+                    dataset_choice = gr.Radio(
+                        choices=["Usar CBIS-DDSM (Automático)", "Subir archivo .zip"],
+                        value="Usar CBIS-DDSM (Automático)",
+                        label="Selecciona origen de datos",
                     )
                     data_zip = gr.File(
-                        label="O sube tu dataset (.zip con carpetas con_cancer / sin_cancer)",
+                        label="Sube tu dataset (.zip con carpetas con_cancer / sin_cancer)",
                         file_types=[".zip"],
                         type="filepath",
+                        visible=False,
+                    )
+                    
+                    def toggle_zip_upload(choice):
+                        return gr.update(visible=(choice == "Subir archivo .zip"))
+                    
+                    dataset_choice.change(
+                        fn=toggle_zip_upload,
+                        inputs=dataset_choice,
+                        outputs=data_zip
                     )
 
                     gr.Markdown("#### 🔧 Hiperparámetros")
@@ -923,7 +935,7 @@ def build_app() -> gr.Blocks:
             btn_train.click(
                 fn=start_training,
                 inputs=[
-                    data_zip, use_cbis_ddsm,
+                    data_zip, dataset_choice,
                     task_selector_train, model_selector_train,
                     epochs_slider, batch_slider, lr_slider,
                     freeze_backbone, mixed_precision,
