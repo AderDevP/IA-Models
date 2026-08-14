@@ -345,60 +345,70 @@ def start_training(
 ):
     """Callback de entrenamiento — generator para actualizar UI en tiempo real."""
     
-    use_cbis_ddsm = (dataset_choice == "Usar CBIS-DDSM (Automático)")
-    freeze_backbone = (freeze_backbone_str == "Sí")
-    mixed_precision = (mixed_precision_str == "Sí")
+    try:
+        use_cbis_ddsm = (dataset_choice == "Usar CBIS-DDSM (Automático)")
+        freeze_backbone = (freeze_backbone_str == "Sí")
+        mixed_precision = (mixed_precision_str == "Sí")
 
-    task_id  = parse_task_id_from_choice(task_choice_train)
-    model_id = parse_model_id_from_choice(model_choice_train)
+        task_id  = parse_task_id_from_choice(task_choice_train)
+        model_id = parse_model_id_from_choice(model_choice_train)
 
-    task = TaskRegistry.load_task(task_id)
-    if task is None:
-        yield "❌ Tarea no disponible.", build_empty_plot(), None
+        task = TaskRegistry.load_task(task_id)
+        if task is None:
+            yield "❌ Tarea no disponible.", build_empty_plot(), None
+            return
+
+        from train import Trainer
+        trainer = Trainer(model_id=model_id, task=task)
+        _trainer_ref["current"] = trainer
+
+        # Resolver directorio de datos
+        if use_cbis_ddsm:
+            data_source = "cbis_ddsm"
+        elif data_zip is not None:
+            data_source = _extract_zip(data_zip)
+        else:
+            yield "❌ Por favor, sube un dataset o selecciona CBIS-DDSM.", build_empty_plot(), None
+            return
+
+        progress(0.02, desc="Iniciando entrenamiento...")
+    except Exception as e:
+        import traceback
+        yield f"❌ CRASH INICIAL:\n{traceback.format_exc()}", build_empty_plot(), None
         return
-
-    from train import Trainer
-    trainer = Trainer(model_id=model_id, task=task)
-    _trainer_ref["current"] = trainer
-
-    # Resolver directorio de datos
-    if use_cbis_ddsm:
-        data_source = "cbis_ddsm"
-    elif data_zip is not None:
-        data_source = _extract_zip(data_zip)
-    else:
-        yield "❌ Por favor, sube un dataset o selecciona CBIS-DDSM.", build_empty_plot(), None
-        return
-
-    progress(0.02, desc="Iniciando entrenamiento...")
 
     best_model_path = None
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": []}
 
-    for result in trainer.train_generator(
-        data_source=data_source,
-        use_cbis_ddsm=use_cbis_ddsm,
-        epochs=epochs,
-        batch_size=batch_size,
-        learning_rate=learning_rate,
-        freeze_backbone=freeze_backbone,
-        mixed_precision=mixed_precision,
-    ):
-        status_text = result.get("status", "")
+    try:
+        for result in trainer.train_generator(
+            data_source=data_source,
+            use_cbis_ddsm=use_cbis_ddsm,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            freeze_backbone=freeze_backbone,
+            mixed_precision=mixed_precision,
+        ):
+            status_text = result.get("status", "")
 
-        if "history" in result:
-            history = result["history"]
+            if "history" in result:
+                history = result["history"]
 
-        if "best_model_path" in result and result["best_model_path"]:
-            best_model_path = result["best_model_path"]
+            if "best_model_path" in result and result["best_model_path"]:
+                best_model_path = result["best_model_path"]
 
-        epoch = result.get("epoch", 0)
-        total = result.get("epochs", epochs)
-        if epoch:
-            progress(epoch / total, desc=f"Epoch {epoch}/{total}")
+            epoch = result.get("epoch", 0)
+            total = result.get("epochs", epochs)
+            if epoch:
+                progress(epoch / total, desc=f"Epoch {epoch}/{total}")
 
-        fig = build_training_plot(history)
-        yield status_text, fig, best_model_path
+            fig = build_training_plot(history)
+            yield status_text, fig, best_model_path
+    except Exception as e:
+        import traceback
+        yield f"❌ CRASH DURANTE ENTRENAMIENTO:\n{traceback.format_exc()}", build_training_plot(history), best_model_path
+        return
 
 
 def stop_training():

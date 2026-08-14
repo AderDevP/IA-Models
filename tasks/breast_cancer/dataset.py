@@ -61,166 +61,74 @@ class CBISDDSMDataset(Dataset):
             self._load_from_cache(cache_split, max_samples)
             return
 
-        logger.info(f"Descargando CBIS-DDSM (split={self.split}) desde HuggingFace...")
-        self._download_from_hf(max_samples)
+        logger.info(f"Descargando CBIS-DDSM (split={self.split}) desde Kaggle...")
+        self._download_dataset(max_samples)
 
-    def _download_from_hf(self, max_samples: Optional[int]) -> None:
-        # ── 1. Intentar con TensorFlow Datasets (fuente oficial) ────
-        if self._try_tfds(max_samples):
-            return
-        # ── 2. Fallback: HuggingFace datasets ───────────────────────
-        self._try_huggingface(max_samples)
-
-    def _try_tfds(self, max_samples: Optional[int]) -> bool:
-        """Descarga CBIS-DDSM desde TensorFlow Datasets (fuente oficial).
-        
-        Dataset: curated_breast_imaging_ddsm  (~6 GB para ROIs de masas)
-        Docs: https://www.tensorflow.org/datasets/catalog/curated_breast_imaging_ddsm
-        """
+    def _download_dataset(self, max_samples: Optional[int]) -> None:
+        """Descarga el dataset usando kagglehub (awsaf49/cbis-ddsm-breast-cancer-image-dataset)"""
+        logger.info("Descargando CBIS-DDSM desde Kaggle...")
         try:
-            import tensorflow as tf
-            import tensorflow_datasets as tfds
+            import kagglehub
         except ImportError:
-            logger.info("TensorFlow Datasets no instalado — saltando TFDS.")
-            return False
+            import subprocess, sys
+            logger.warning("Falta kagglehub. Instalando automáticamente...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "kagglehub"])
+            import kagglehub
 
         try:
-            # Silenciar GPU de TF para que no robe VRAM de PyTorch
-            tf.config.set_visible_devices([], 'GPU')
+            # Descargar dataset (puede tardar unos minutos si es de 5GB)
+            path_str = kagglehub.dataset_download("awsaf49/cbis-ddsm-breast-cancer-image-dataset")
+            dataset_path = Path(path_str)
+            logger.info(f"Dataset descargado en: {dataset_path}")
 
-            logger.info("Descargando CBIS-DDSM desde TensorFlow Datasets...")
-            logger.info("  Dataset: curated_breast_imaging_ddsm")
-            logger.info("  Esto puede tardar 15-45 min dependiendo de la velocidad de Colab.")
-
-            # split de masa (más relevante para cáncer de mama)
-            tfds_split = "train" if self.split == "train" else "test"
-            
-            ds_info_builder = tfds.builder("curated_breast_imaging_ddsm")
-            logger.info(f"  Tamaño total del dataset: {ds_info_builder.info.splits}")
-            
-            ds, info = tfds.load(
-                "curated_breast_imaging_ddsm",
-                split=tfds_split,
-                with_info=True,
-                as_supervised=False,
-                shuffle_files=True,
-            )
-
+            # Crear directorios locales de cache
             save_dir = self.cache_dir / self.split
             save_dir.mkdir(parents=True, exist_ok=True)
             (save_dir / "benign").mkdir(exist_ok=True)
             (save_dir / "malignant").mkdir(exist_ok=True)
 
-            import numpy as np
+            # Buscar todas las imágenes (png, jpg, jpeg) en la carpeta descargada
+            img_files = []
+            for ext in ["*.png", "*.jpg", "*.jpeg"]:
+                img_files.extend(list(dataset_path.rglob(ext)))
+
+            if not img_files:
+                logger.error("No se encontraron imágenes en el dataset de Kaggle.")
+                self._create_synthetic_cbis_ddsm(100)
+                return
+
+            import shutil
             saved = 0
-            skipped = 0
-            for i, sample in enumerate(ds):
-                try:
-                    # TFDS curated_breast_imaging_ddsm keys: image, label, id
-                    img_tensor = sample.get("image", sample.get("roi_image"))
-                    if img_tensor is None:
-                        skipped += 1
-                        continue
+            for img_file in img_files:
+                if max_samples and saved >= max_samples:
+                    break
 
-                    label_tensor = sample.get("label")
-                    # label 0 = BENIGN, 1 = MALIGNANT en CBIS-DDSM oficial
-                    label = int(label_tensor.numpy()) if label_tensor is not None else 0
+                # Determinar clase basada en el nombre del archivo o ruta
+                path_lower = str(img_file).lower()
+                if "malignant" in path_lower:
+                    label_name = "malignant"
+                else:
+                    label_name = "benign" # por defecto o si dice benign
 
-                    img_np = img_tensor.numpy()
-                    if img_np.dtype != np.uint8:
-                        img_np = ((img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8) * 255).astype(np.uint8)
-                    
-                    img = Image.fromarray(img_np).convert("RGB")
-                    label_name = "malignant" if label == 1 else "benign"
-                    img_path = save_dir / label_name / f"tfds_{i:06d}.png"
-                    img.save(img_path)
-                    saved += 1
+                dest_path = save_dir / label_name / img_file.name
+                
+                # Evitar sobreescribir si el archivo ya existe (o si hay nombres duplicados)
+                if dest_path.exists():
+                    dest_path = save_dir / label_name / f"{saved}_{img_file.name}"
 
-                    if saved % 200 == 0:
-                        logger.info(f"  Guardando imágenes TFDS: {saved} guardadas, {skipped} saltadas...")
-                    
-                    if max_samples and saved >= max_samples:
-                        logger.info(f"  Límite de {max_samples} muestras alcanzado.")
-                        break
-                except Exception as e:
-                    skipped += 1
-                    continue
+                shutil.copy2(img_file, dest_path)
+                saved += 1
+                
+                if saved % 500 == 0:
+                    logger.info(f"  Procesando imágenes Kaggle: {saved} copiadas...")
 
-            logger.info(f"✅ TFDS CBIS-DDSM: {saved} imágenes guardadas, {skipped} saltadas.")
+            logger.info(f"Dataset de Kaggle procesado: {saved} imágenes guardadas.")
             self._load_from_cache(save_dir, max_samples)
-            return True
 
         except Exception as e:
-            logger.warning(f"Error descargando desde TFDS: {e}")
-            return False
-
-    def _try_huggingface(self, max_samples: Optional[int]) -> None:
-        """Fallback: intentar descargar desde HuggingFace Datasets."""
-        try:
-            from datasets import load_dataset
-        except ImportError:
-            logger.warning("Librería 'datasets' no instalada.")
-            self._create_synthetic_cbis_ddsm(max_samples or 100)
-            return
-
-        # Repositorios HF conocidos (pueden cambiar con el tiempo)
-        hf_candidates = [
-            ("Falah/Alzheimer_MRI", None),           # placeholder si hay nuevos repos CBIS
-        ]
-
-        ds = None
-        for repo_id, cfg in hf_candidates:
-            try:
-                kwargs = dict(split=self.split, cache_dir=str(self.cache_dir / "_hf_raw"))
-                if cfg:
-                    kwargs["name"] = cfg
-                ds = load_dataset(repo_id, **kwargs)
-                logger.info(f"✅ Dataset HF '{repo_id}' cargado.")
-                break
-            except Exception as e:
-                logger.warning(f"No se pudo cargar '{repo_id}': {e}")
-
-        if ds is None:
-            logger.warning("⚠️ Ninguna fuente HF disponible. Generando dataset de demostración local...")
-            self._create_synthetic_cbis_ddsm(max_samples or 100)
-            return
-
-        # Limitar por tamaño
-        if max_samples and len(ds) > max_samples:
-            indices = random.sample(range(len(ds)), max_samples)
-            ds = ds.select(indices)
-        elif max_samples is None:
-            estimated_max = (CBIS_DDSM_MAX_GB * 1024 * 1024 * 1024) // (50 * 1024)
-            if len(ds) > estimated_max:
-                indices = random.sample(range(len(ds)), int(estimated_max))
-                ds = ds.select(indices)
-
-        save_dir = self.cache_dir / self.split
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        import numpy as np
-        for i, sample in enumerate(ds):
-            label_raw = str(sample.get("pathology", sample.get("label", sample.get("target", "BENIGN")))).upper()
-            label = 1 if any(k in label_raw for k in ["MALIGNANT", "MALIGNO", "1", "POSITIVE"]) else 0
-            label_dir = save_dir / ("malignant" if label == 1 else "benign")
-            label_dir.mkdir(exist_ok=True)
-
-            img = sample.get("image", sample.get("img", sample.get("file")))
-            if img is None:
-                continue
-            if not isinstance(img, Image.Image):
-                try:
-                    img = Image.fromarray(np.array(img))
-                except Exception:
-                    continue
-            img = img.convert("RGB")
-            img_path = label_dir / f"{i:06d}.png"
-            img.save(img_path)
-
-            if i % 500 == 0:
-                logger.info(f"  Guardado {i}/{len(ds)} imágenes...")
-
-        self._load_from_cache(save_dir, max_samples)
+            logger.error(f"Error descargando desde Kaggle: {e}")
+            logger.warning("Generando dataset sintético como fallback...")
+            self._create_synthetic_cbis_ddsm(100)
 
     def _create_synthetic_cbis_ddsm(self, num_samples: int = 100) -> None:
         """Crea un dataset sintético/demostrativo de mamografías para entrenamiento."""
