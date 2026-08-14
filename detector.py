@@ -134,39 +134,41 @@ def _build_vlm(meta, weights_path, device):
     """Carga un VLM (Vision-Language Model) usando transformers y bitsandbytes."""
     try:
         from transformers import AutoProcessor, AutoModelForImageTextToText
-        import torch
+    except ImportError:
+        import subprocess, sys
+        logger.warning("Faltan librerías VLM. Instalando automáticamente (transformers, peft, accelerate, bitsandbytes)...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "transformers", "peft", "accelerate", "bitsandbytes"])
+        from transformers import AutoProcessor, AutoModelForImageTextToText
 
-        hf_repo = meta.get("hf_repo", "ArnauMuns/medgemma-masses-cbis-ddsm")
+    import torch
+    hf_repo = meta.get("hf_repo", "ArnauMuns/medgemma-masses-cbis-ddsm")
+    
+    # Intentar cargar en 4-bit para evitar OOM en GPUs pequeñas (ej. Colab T4)
+    try:
+        from transformers import BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        model = AutoModelForImageTextToText.from_pretrained(
+            hf_repo,
+            quantization_config=bnb_config,
+            device_map="auto"
+        )
+    except (ImportError, ValueError) as e:
+        logger.warning(f"BitsAndBytes falló o no está instalado ({e}). Usando fp16.")
+        model = AutoModelForImageTextToText.from_pretrained(
+            hf_repo,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
         
-        # Intentar cargar en 4-bit para evitar OOM en GPUs pequeñas (ej. Colab T4)
-        try:
-            from transformers import BitsAndBytesConfig
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-            )
-            model = AutoModelForImageTextToText.from_pretrained(
-                hf_repo,
-                quantization_config=bnb_config,
-                device_map="auto"
-            )
-        except (ImportError, ValueError) as e:
-            logger.warning(f"BitsAndBytes falló o no está instalado ({e}). Usando fp16.")
-            model = AutoModelForImageTextToText.from_pretrained(
-                hf_repo,
-                torch_dtype=torch.float16,
-                device_map="auto"
-            )
-            
-        processor = AutoProcessor.from_pretrained(hf_repo)
-        
-        # Adjuntamos el processor al modelo para tenerlo disponible durante inferencia
-        model.processor = processor
-        model.eval()
-        return model
-    except ImportError as e:
-        logger.error(f"Error cargando VLM: {e}")
-        raise ImportError("Faltan librerías para VLM. Ejecuta: pip install transformers peft accelerate bitsandbytes")
+    processor = AutoProcessor.from_pretrained(hf_repo)
+    
+    # Adjuntamos el processor al modelo para tenerlo disponible durante inferencia
+    model.processor = processor
+    model.eval()
+    return model
 
 
 def _build_efficientnet(meta, weights_path, device):
