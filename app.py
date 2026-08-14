@@ -1116,6 +1116,7 @@ def launch_app(demo: gr.Blocks, **kwargs) -> Any:
         "share": True,
         "show_error": True,
         "quiet": False,
+        "inline": False,   # <-- desactiva el iframe preview en Colab, deja la consola libre para logs
     }
     launch_kwargs.update(kwargs)
 
