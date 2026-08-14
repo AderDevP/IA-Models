@@ -339,13 +339,15 @@ def start_training(
     epochs: int,
     batch_size: int,
     learning_rate: float,
-    freeze_backbone: bool,
-    mixed_precision: bool,
+    freeze_backbone_str: str,
+    mixed_precision_str: str,
     progress=gr.Progress(track_tqdm=True),
 ):
     """Callback de entrenamiento — generator para actualizar UI en tiempo real."""
     
     use_cbis_ddsm = (dataset_choice == "Usar CBIS-DDSM (Automático)")
+    freeze_backbone = (freeze_backbone_str == "Sí")
+    mixed_precision = (mixed_precision_str == "Sí")
 
     task_id  = parse_task_id_from_choice(task_choice_train)
     model_id = parse_model_id_from_choice(model_choice_train)
@@ -918,9 +920,18 @@ def build_app() -> gr.Blocks:
                     epochs_slider     = gr.Slider(1, 100, value=20, step=1,    label="Epochs")
                     batch_slider      = gr.Slider(4, 64,  value=16, step=4,    label="Batch Size")
                     lr_slider         = gr.Slider(1e-6, 1e-2, value=1e-4, step=1e-6, label="Learning Rate")
-                    freeze_backbone   = gr.Checkbox(value=True, label="Congelar backbone (primeras 3 épocas)")
-                    mixed_precision   = gr.Checkbox(value=True, label="Mixed Precision (AMP) — más rápido en GPU")
-
+                    freeze_backbone = gr.Dropdown(
+                        choices=["Sí", "No"],
+                        value="Sí",
+                        label="Congelar backbone (primeras 3 épocas)",
+                        interactive=True,
+                    )
+                    mixed_precision = gr.Dropdown(
+                        choices=["Sí", "No"],
+                        value="Sí",
+                        label="Mixed Precision (AMP) — más rápido en GPU",
+                        interactive=True,
+                    )
                     with gr.Row():
                         btn_train  = gr.Button("🚀 Iniciar Entrenamiento", variant="primary", size="lg")
                         btn_stop   = gr.Button("⏹️ Detener", variant="stop")

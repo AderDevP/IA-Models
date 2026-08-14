@@ -65,6 +65,97 @@ class CBISDDSMDataset(Dataset):
         self._download_from_hf(max_samples)
 
     def _download_from_hf(self, max_samples: Optional[int]) -> None:
+        # ── 1. Intentar con TensorFlow Datasets (fuente oficial) ────
+        if self._try_tfds(max_samples):
+            return
+        # ── 2. Fallback: HuggingFace datasets ───────────────────────
+        self._try_huggingface(max_samples)
+
+    def _try_tfds(self, max_samples: Optional[int]) -> bool:
+        """Descarga CBIS-DDSM desde TensorFlow Datasets (fuente oficial).
+        
+        Dataset: curated_breast_imaging_ddsm  (~6 GB para ROIs de masas)
+        Docs: https://www.tensorflow.org/datasets/catalog/curated_breast_imaging_ddsm
+        """
+        try:
+            import tensorflow as tf
+            import tensorflow_datasets as tfds
+        except ImportError:
+            logger.info("TensorFlow Datasets no instalado — saltando TFDS.")
+            return False
+
+        try:
+            # Silenciar GPU de TF para que no robe VRAM de PyTorch
+            tf.config.set_visible_devices([], 'GPU')
+
+            logger.info("Descargando CBIS-DDSM desde TensorFlow Datasets...")
+            logger.info("  Dataset: curated_breast_imaging_ddsm")
+            logger.info("  Esto puede tardar 15-45 min dependiendo de la velocidad de Colab.")
+
+            # split de masa (más relevante para cáncer de mama)
+            tfds_split = "train" if self.split == "train" else "test"
+            
+            ds_info_builder = tfds.builder("curated_breast_imaging_ddsm")
+            logger.info(f"  Tamaño total del dataset: {ds_info_builder.info.splits}")
+            
+            ds, info = tfds.load(
+                "curated_breast_imaging_ddsm",
+                split=tfds_split,
+                with_info=True,
+                as_supervised=False,
+                shuffle_files=True,
+            )
+
+            save_dir = self.cache_dir / self.split
+            save_dir.mkdir(parents=True, exist_ok=True)
+            (save_dir / "benign").mkdir(exist_ok=True)
+            (save_dir / "malignant").mkdir(exist_ok=True)
+
+            import numpy as np
+            saved = 0
+            skipped = 0
+            for i, sample in enumerate(ds):
+                try:
+                    # TFDS curated_breast_imaging_ddsm keys: image, label, id
+                    img_tensor = sample.get("image", sample.get("roi_image"))
+                    if img_tensor is None:
+                        skipped += 1
+                        continue
+
+                    label_tensor = sample.get("label")
+                    # label 0 = BENIGN, 1 = MALIGNANT en CBIS-DDSM oficial
+                    label = int(label_tensor.numpy()) if label_tensor is not None else 0
+
+                    img_np = img_tensor.numpy()
+                    if img_np.dtype != np.uint8:
+                        img_np = ((img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8) * 255).astype(np.uint8)
+                    
+                    img = Image.fromarray(img_np).convert("RGB")
+                    label_name = "malignant" if label == 1 else "benign"
+                    img_path = save_dir / label_name / f"tfds_{i:06d}.png"
+                    img.save(img_path)
+                    saved += 1
+
+                    if saved % 200 == 0:
+                        logger.info(f"  Guardando imágenes TFDS: {saved} guardadas, {skipped} saltadas...")
+                    
+                    if max_samples and saved >= max_samples:
+                        logger.info(f"  Límite de {max_samples} muestras alcanzado.")
+                        break
+                except Exception as e:
+                    skipped += 1
+                    continue
+
+            logger.info(f"✅ TFDS CBIS-DDSM: {saved} imágenes guardadas, {skipped} saltadas.")
+            self._load_from_cache(save_dir, max_samples)
+            return True
+
+        except Exception as e:
+            logger.warning(f"Error descargando desde TFDS: {e}")
+            return False
+
+    def _try_huggingface(self, max_samples: Optional[int]) -> None:
+        """Fallback: intentar descargar desde HuggingFace Datasets."""
         try:
             from datasets import load_dataset
         except ImportError:
@@ -72,27 +163,29 @@ class CBISDDSMDataset(Dataset):
             self._create_synthetic_cbis_ddsm(max_samples or 100)
             return
 
+        # Repositorios HF conocidos (pueden cambiar con el tiempo)
         hf_candidates = [
-            "matthieulel/cbis-ddsm",
-            "ianpan/cbis-ddsm-patches",
-            "Edziocodes/breast-cancer",
+            ("Falah/Alzheimer_MRI", None),           # placeholder si hay nuevos repos CBIS
         ]
 
         ds = None
-        for repo_id in hf_candidates:
+        for repo_id, cfg in hf_candidates:
             try:
-                ds = load_dataset(repo_id, split=self.split, cache_dir=str(self.cache_dir / "_hf_raw"))
-                logger.info(f"✅ Dataset HF '{repo_id}' cargado exitosamente.")
+                kwargs = dict(split=self.split, cache_dir=str(self.cache_dir / "_hf_raw"))
+                if cfg:
+                    kwargs["name"] = cfg
+                ds = load_dataset(repo_id, **kwargs)
+                logger.info(f"✅ Dataset HF '{repo_id}' cargado.")
                 break
             except Exception as e:
                 logger.warning(f"No se pudo cargar '{repo_id}': {e}")
 
         if ds is None:
-            logger.warning("⚠️ Dataset CBIS-DDSM no disponible en HuggingFace. Generando dataset de demostración local...")
+            logger.warning("⚠️ Ninguna fuente HF disponible. Generando dataset de demostración local...")
             self._create_synthetic_cbis_ddsm(max_samples or 100)
             return
 
-        # Limitar samples para respetar el límite de ~10 GB
+        # Limitar por tamaño
         if max_samples and len(ds) > max_samples:
             indices = random.sample(range(len(ds)), max_samples)
             ds = ds.select(indices)
@@ -102,10 +195,10 @@ class CBISDDSMDataset(Dataset):
                 indices = random.sample(range(len(ds)), int(estimated_max))
                 ds = ds.select(indices)
 
-        # Guardar imágenes en caché local
         save_dir = self.cache_dir / self.split
         save_dir.mkdir(parents=True, exist_ok=True)
 
+        import numpy as np
         for i, sample in enumerate(ds):
             label_raw = str(sample.get("pathology", sample.get("label", sample.get("target", "BENIGN")))).upper()
             label = 1 if any(k in label_raw for k in ["MALIGNANT", "MALIGNO", "1", "POSITIVE"]) else 0

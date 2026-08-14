@@ -293,18 +293,9 @@ def run_vlm_inference(
     if not processor:
         raise ValueError("El modelo VLM no tiene 'processor' adjunto.")
         
-    # Usar chat template si está disponible, sino hacer fallback a <image> prefix
-    messages = [
-        {"role": "user", "content": [
-            {"type": "image"},
-            {"type": "text", "text": prompt_text}
-        ]}
-    ]
-    try:
-        final_prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    except Exception:
-        # Fallback para modelos que no soportan chat_template con listas complejas
-        final_prompt = f"<image>\n{prompt_text}"
+    # Forzar el token <image> que exige la arquitectura PaliGemma/MedGemma
+    # ignorando apply_chat_template porque a veces elimina el token visual.
+    final_prompt = f"<image> {prompt_text}"
 
     inputs = processor(text=final_prompt, images=image, return_tensors="pt")
     # Acomodar tipos para int4/fp16
