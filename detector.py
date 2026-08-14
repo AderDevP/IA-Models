@@ -835,6 +835,8 @@ def full_diagnostic_pipeline(
         heatmap_img = image.copy()   # YOLO no usa Grad-CAM
         return annotated, heatmap_img, report
 
+    arch = meta.get("architecture", "").lower()
+
     # ── VLM (MedGemma, PaliGemma) ──
     if task_type == "vlm_classification" or "medgemma" in arch:
         report = run_vlm_inference(
